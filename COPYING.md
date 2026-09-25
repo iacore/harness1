@@ -1,19 +1,3 @@
-# License
-
-harness1 is licensed under the GNU Affero General Public License, **version 3
-only**. The "or any later version" option is not taken, so no later version of
-the license applies.
-
-This program is distributed in the hope that it will be useful, but WITHOUT ANY
-WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
-PARTICULAR PURPOSE.
-
-SPDX-License-Identifier: AGPL-3.0-only
-
-The license text follows, verbatim.
-
----
-
                     GNU AFFERO GENERAL PUBLIC LICENSE
                        Version 3, 19 November 2007
 
@@ -675,3 +659,16 @@ specific requirements.
 if any, to sign a "copyright disclaimer" for the program, if necessary.
 For more information on this, and how to apply and follow the GNU AGPL, see
 <https://www.gnu.org/licenses/>.
+---
+
+## License notice
+
+harness1 is licensed under the GNU Affero General Public License, **version 3
+only**. The "or any later version" option is not taken, so no later version of
+the license applies.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE.
+
+SPDX-License-Identifier: AGPL-3.0-only
