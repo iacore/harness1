@@ -8,7 +8,7 @@
 //
 // Two features are restricted to the Beta API root and are rejected by Chat and
 // ChatStream unless the client was built with deepseek.WithBeta: Chat Prefix
-// Completion (Message.Prefix) and strict tool calls (Function.Strict).
+// Completion (AssistantMessage.Prefix) and strict tool calls (Function.Strict).
 //
 // Streaming is a sequence of semantic server-sent events carrying chat
 // completion chunks, terminated by "data: [DONE]" rather than by a message with
@@ -34,11 +34,13 @@ type Request struct {
 	// Model is deepseek.ModelFlash or deepseek.ModelV4Pro. Required.
 	Model string `json:"model"`
 
-	// Messages is the conversation so far. Required; the API accepts one or
-	// more.
+	// Messages is the conversation so far, built from *SystemMessage,
+	// *UserMessage, *AssistantMessage and *ToolMessage. Required; the API
+	// accepts one or more.
 	Messages []Message `json:"messages"`
 
-	// Thinking toggles the chain of thought, which is enabled by default.
+	// Thinking toggles the chain of thought, which is enabled by default. Build
+	// it with EnableThinking or DisableThinking.
 	Thinking *Thinking `json:"thinking,omitempty"`
 
 	// ReasoningEffort selects the thinking effort. EffortNone disables thinking
@@ -49,7 +51,8 @@ type Request struct {
 	// 8192 in non-thinking mode, 65536 in thinking mode, 131072 at EffortMax.
 	MaxTokens *int `json:"max_tokens,omitempty"`
 
-	// ResponseFormat asks for plain text or for a JSON object.
+	// ResponseFormat asks for plain text or for a JSON object. Build it with
+	// TextResponseFormat or JSONResponseFormat.
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 
 	// Stop lists up to MaxStopSequences sequences at which generation stops.
@@ -69,7 +72,7 @@ type Request struct {
 	// effective range is 0.95 to 1.
 	TopP *float64 `json:"top_p,omitempty"`
 
-	// Tools are the functions the model may call.
+	// Tools are the functions the model may call, each a function declaration.
 	Tools []Tool `json:"tools,omitempty"`
 
 	// ToolChoice constrains tool calling. Required and named choices are not
@@ -161,8 +164,10 @@ func (c *Client) prepare(req *Request, stream bool) error {
 			return errors.New("deepseek: strict tool calls need the Beta API root; build the client with deepseek.WithBeta")
 		}
 	}
-	if last := len(req.Messages) - 1; last >= 0 && req.Messages[last].Prefix {
-		return errors.New("deepseek: chat prefix completion needs the Beta API root; build the client with deepseek.WithBeta")
+	if last := len(req.Messages) - 1; last >= 0 {
+		if assistant, ok := req.Messages[last].(*AssistantMessage); ok && assistant.Prefix {
+			return errors.New("deepseek: chat prefix completion needs the Beta API root; build the client with deepseek.WithBeta")
+		}
 	}
 	return nil
 }

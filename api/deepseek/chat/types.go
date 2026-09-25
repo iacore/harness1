@@ -34,8 +34,8 @@ const (
 
 // thinking.type values. Thinking mode is enabled by default.
 const (
-	ThinkingEnabled  = "enabled"
-	ThinkingDisabled = "disabled"
+	thinkingEnabled  = "enabled"
+	thinkingDisabled = "disabled"
 )
 
 // reasoning_effort values. minimal, medium, xhigh and ultra are accepted for
@@ -54,8 +54,8 @@ const (
 
 // response_format types.
 const (
-	ResponseFormatText       = "text"
-	ResponseFormatJSONObject = "json_object"
+	responseFormatText       = "text"
+	responseFormatJSONObject = "json_object"
 )
 
 // Content part types.
@@ -65,12 +65,14 @@ const (
 	PartFile     = "file"
 )
 
-// Tool type and tool_choice modes.
+// Tool type and tool_choice modes. "function" is the only tool type the API
+// defines; the tool_choice modes are internal because a choice is built with
+// NoToolChoice, AutoToolChoice, RequiredToolChoice or FunctionToolChoice.
 const (
 	ToolTypeFunction       = "function"
-	ToolChoiceModeNone     = "none"
-	ToolChoiceModeAuto     = "auto"
-	ToolChoiceModeRequired = "required"
+	toolChoiceModeNone     = "none"
+	toolChoiceModeAuto     = "auto"
+	toolChoiceModeRequired = "required"
 )
 
 // Image detail levels accepted in an image_url content part.
@@ -187,41 +189,137 @@ func (c *Content) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Message is one entry of a conversation sent to the API. Which fields apply
-// depends on Role: ToolCallID for RoleTool, ToolCalls and ReasoningContent for
-// RoleAssistant.
-type Message struct {
-	Role    string  `json:"role"`
-	Content Content `json:"content"`
-	Name    string  `json:"name,omitempty"`
+// Message is one entry of a conversation sent to the API. It is a closed set of
+// four types — *SystemMessage, *UserMessage, *AssistantMessage and *ToolMessage
+// — because the API defines a different field set for each role. A single
+// struct with all the fields would let a caller build combinations the API
+// rejects (tool calls on a user turn, a tool_call_id on an assistant turn, a
+// role that is not one of the four); one type per role makes those states
+// unrepresentable instead of merely invalid. Validate still checks the details
+// the type system cannot, such as required content and cross-message tool-call
+// references.
+type Message interface {
+	// Role is the API role of the message.
+	Role() string
+	// isMessage seals the set to the types in this package.
+	isMessage()
+}
 
-	// ToolCallID identifies the tool call a RoleTool message answers.
-	ToolCallID string `json:"tool_call_id,omitempty"`
+// SystemMessage is the instruction that steers the model. The API accepts plain
+// text here.
+type SystemMessage struct {
+	// Text is the instruction. Required.
+	Text string
+}
 
-	// ToolCalls are the calls the model requested in a RoleAssistant message.
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+// Role is RoleSystem.
+func (*SystemMessage) Role() string { return RoleSystem }
+func (*SystemMessage) isMessage()   {}
 
-	// ReasoningContent returns the chain of thought to the API. It is required
-	// on every previous assistant message when the request carries tools, and
-	// it is the CoT input for a Beta Chat Prefix Completion.
-	ReasoningContent string `json:"reasoning_content,omitempty"`
+// MarshalJSON encodes the message in the shape POST /chat/completions expects.
+func (m *SystemMessage) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}{RoleSystem, m.Text})
+}
+
+// UserMessage is input from the caller: text, and images referenced by URL or
+// uploaded file.
+type UserMessage struct {
+	// Content is the input, as text, image_url and file parts. Required.
+	Content Content
+}
+
+// Role is RoleUser.
+func (*UserMessage) Role() string { return RoleUser }
+func (*UserMessage) isMessage()   {}
+
+// MarshalJSON encodes the message in the shape POST /chat/completions expects.
+func (m *UserMessage) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Role    string  `json:"role"`
+		Content Content `json:"content"`
+	}{RoleUser, m.Content})
+}
+
+// AssistantMessage is a previous model turn replayed into the conversation: its
+// answer text, the tool calls it requested, and the chain of thought behind
+// them. Build one from a response with GeneratedMessage.Message, or directly to
+// start a Beta Chat Prefix Completion.
+type AssistantMessage struct {
+	// Content is the answer text. It may be empty when the turn only calls
+	// tools, which the API expects as an empty string.
+	Content Content
+
+	// ToolCalls are the calls the model requested in this turn.
+	ToolCalls []ToolCall
+
+	// ReasoningContent is the chain of thought behind the turn. The API requires
+	// it on an assistant message that calls tools when the request carries
+	// tools, and it is the CoT input for a Beta Chat Prefix Completion.
+	ReasoningContent string
 
 	// Prefix marks a Beta Chat Prefix Completion: the model must start its
-	// answer with Content. Only valid on the last message, which must be from
-	// the assistant, and requires the Beta API root.
-	Prefix bool `json:"prefix,omitempty"`
+	// answer with Content. Only valid on the last message and requires the Beta
+	// API root.
+	Prefix bool
 }
 
-// ToolResult returns a RoleTool message answering the tool call with the given
-// id.
-func ToolResult(toolCallID, content string) Message {
-	return Message{Role: RoleTool, ToolCallID: toolCallID, Content: Text(content)}
+// Role is RoleAssistant.
+func (*AssistantMessage) Role() string { return RoleAssistant }
+func (*AssistantMessage) isMessage()   {}
+
+// MarshalJSON encodes the message in the shape POST /chat/completions expects.
+func (m *AssistantMessage) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Role             string     `json:"role"`
+		Content          Content    `json:"content"`
+		ReasoningContent string     `json:"reasoning_content,omitempty"`
+		ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
+		Prefix           bool       `json:"prefix,omitempty"`
+	}{RoleAssistant, m.Content, m.ReasoningContent, m.ToolCalls, m.Prefix})
 }
 
-// Tool describes a function the model may call.
+// ToolMessage is the result of a tool call, answering one AssistantMessage tool
+// call by id. An empty result is allowed.
+type ToolMessage struct {
+	// ToolCallID identifies the assistant tool call this result answers.
+	ToolCallID string
+	// Content is the result text.
+	Content string
+}
+
+// Role is RoleTool.
+func (*ToolMessage) Role() string { return RoleTool }
+func (*ToolMessage) isMessage()   {}
+
+// MarshalJSON encodes the message in the shape POST /chat/completions expects.
+func (m *ToolMessage) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Role       string `json:"role"`
+		Content    string `json:"content"`
+		ToolCallID string `json:"tool_call_id"`
+	}{RoleTool, m.Content, m.ToolCallID})
+}
+
+// ToolResult returns a ToolMessage answering the tool call with the given id.
+func ToolResult(toolCallID, content string) *ToolMessage {
+	return &ToolMessage{ToolCallID: toolCallID, Content: content}
+}
+
+// Tool describes a function the model may call. "function" is the only tool
+// type the API defines, so it is encoded rather than stored.
 type Tool struct {
-	Type     string   `json:"type"`
-	Function Function `json:"function"`
+	Function Function
+}
+
+// MarshalJSON encodes the tool with its type, which is always "function".
+func (t Tool) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type     string   `json:"type"`
+		Function Function `json:"function"`
+	}{ToolTypeFunction, t.Function})
 }
 
 // Function is the declaration of a callable function. Parameters is a JSON
@@ -238,36 +336,36 @@ type Function struct {
 	Strict bool `json:"strict,omitempty"`
 }
 
-// ToolChoice selects the tool the model must call. A zero value is invalid;
+// ToolChoice selects the tool the model must call. The zero value is not valid;
 // build it with NoToolChoice, AutoToolChoice, RequiredToolChoice or
 // FunctionToolChoice.
 type ToolChoice struct {
-	// Mode is one of the ToolChoiceMode values, and is ignored when Function
-	// is set.
-	Mode string
+	// mode is one of the toolChoiceMode values, and is ignored when function is
+	// set.
+	mode string
 
-	// Function names a specific function to call.
-	Function string
+	// function names a specific function to call.
+	function string
 }
 
 // NoToolChoice forbids tool calls.
-func NoToolChoice() ToolChoice { return ToolChoice{Mode: ToolChoiceModeNone} }
+func NoToolChoice() ToolChoice { return ToolChoice{mode: toolChoiceModeNone} }
 
 // AutoToolChoice lets the model decide between answering and calling a tool.
-func AutoToolChoice() ToolChoice { return ToolChoice{Mode: ToolChoiceModeAuto} }
+func AutoToolChoice() ToolChoice { return ToolChoice{mode: toolChoiceModeAuto} }
 
 // RequiredToolChoice forces the model to call one or more tools. Not supported
 // in thinking mode.
-func RequiredToolChoice() ToolChoice { return ToolChoice{Mode: ToolChoiceModeRequired} }
+func RequiredToolChoice() ToolChoice { return ToolChoice{mode: toolChoiceModeRequired} }
 
 // FunctionToolChoice forces the model to call the named function. Not
 // supported in thinking mode.
-func FunctionToolChoice(name string) ToolChoice { return ToolChoice{Function: name} }
+func FunctionToolChoice(name string) ToolChoice { return ToolChoice{function: name} }
 
 // MarshalJSON encodes a mode as a string and a named function as an object.
 func (t ToolChoice) MarshalJSON() ([]byte, error) {
-	if t.Function == "" {
-		return json.Marshal(t.Mode)
+	if t.function == "" {
+		return json.Marshal(t.mode)
 	}
 	return json.Marshal(struct {
 		Type     string `json:"type"`
@@ -276,13 +374,13 @@ func (t ToolChoice) MarshalJSON() ([]byte, error) {
 		} `json:"function"`
 	}{Type: ToolTypeFunction, Function: struct {
 		Name string `json:"name"`
-	}{Name: t.Function}})
+	}{Name: t.function}})
 }
 
 // UnmarshalJSON accepts a mode string or a function object.
 func (t *ToolChoice) UnmarshalJSON(data []byte) error {
 	if len(data) > 0 && data[0] == '"' {
-		return json.Unmarshal(data, &t.Mode)
+		return json.Unmarshal(data, &t.mode)
 	}
 	var obj struct {
 		Type     string `json:"type"`
@@ -296,18 +394,47 @@ func (t *ToolChoice) UnmarshalJSON(data []byte) error {
 	if obj.Type != ToolTypeFunction {
 		return fmt.Errorf("deepseek: tool_choice type %q is not supported", obj.Type)
 	}
-	t.Function = obj.Function.Name
+	t.function = obj.Function.Name
 	return nil
 }
 
-// Thinking toggles the chain of thought. Thinking mode is on by default.
+// Thinking toggles the chain of thought, which is on by default. The zero value
+// is not valid; build it with EnableThinking or DisableThinking.
 type Thinking struct {
-	Type string `json:"type"`
+	typ string
 }
 
-// ResponseFormat asks for plain text or for a guaranteed-valid JSON object.
+// EnableThinking turns thinking mode on, which is the server default.
+func EnableThinking() *Thinking { return &Thinking{typ: thinkingEnabled} }
+
+// DisableThinking turns thinking mode off.
+func DisableThinking() *Thinking { return &Thinking{typ: thinkingDisabled} }
+
+// MarshalJSON encodes {"type": "enabled"} or {"type": "disabled"}.
+func (t *Thinking) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type string `json:"type"`
+	}{t.typ})
+}
+
+// ResponseFormat asks for plain text or for a guaranteed-valid JSON object. The
+// zero value is not valid; build it with TextResponseFormat or
+// JSONResponseFormat.
 type ResponseFormat struct {
-	Type string `json:"type"`
+	typ string
+}
+
+// TextResponseFormat asks for plain text, the default.
+func TextResponseFormat() *ResponseFormat { return &ResponseFormat{typ: responseFormatText} }
+
+// JSONResponseFormat asks for a JSON object that parses as valid JSON.
+func JSONResponseFormat() *ResponseFormat { return &ResponseFormat{typ: responseFormatJSONObject} }
+
+// MarshalJSON encodes {"type": "text"} or {"type": "json_object"}.
+func (f *ResponseFormat) MarshalJSON() ([]byte, error) {
+	return json.Marshal(struct {
+		Type string `json:"type"`
+	}{f.typ})
 }
 
 // Completion is a non-streaming response, and the result of collecting a
@@ -324,9 +451,9 @@ type Completion struct {
 
 // Message returns the message of the first choice, or a zero message when the
 // response carries no choice.
-func (c *Completion) Message() AssistantMessage {
+func (c *Completion) Message() GeneratedMessage {
 	if len(c.Choices) == 0 {
-		return AssistantMessage{}
+		return GeneratedMessage{}
 	}
 	return c.Choices[0].Message
 }
@@ -335,29 +462,24 @@ func (c *Completion) Message() AssistantMessage {
 type Choice struct {
 	Index        int              `json:"index"`
 	FinishReason string           `json:"finish_reason"`
-	Message      AssistantMessage `json:"message"`
+	Message      GeneratedMessage `json:"message"`
 	Logprobs     *Logprobs        `json:"logprobs,omitempty"`
 }
 
-// AssistantMessage is a message generated by the model. Content is empty when
+// GeneratedMessage is a message generated by the model. Content is empty when
 // the API answered with null or with an empty string.
-type AssistantMessage struct {
+type GeneratedMessage struct {
 	Role             string     `json:"role"`
 	Content          string     `json:"content"`
 	ReasoningContent string     `json:"reasoning_content,omitempty"`
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
-// Message converts the generated message into a request message, keeping the
-// chain of thought and the tool calls, which the API requires to be sent back
-// on every tool-calling turn.
-func (m AssistantMessage) Message() Message {
-	role := m.Role
-	if role == "" {
-		role = RoleAssistant
-	}
-	return Message{
-		Role:             role,
+// Message converts the generated message into an assistant turn to replay in
+// the next request, keeping the chain of thought and the tool calls, which the
+// API requires to be sent back on every tool-calling turn.
+func (m GeneratedMessage) Message() *AssistantMessage {
+	return &AssistantMessage{
 		Content:          Text(m.Content),
 		ReasoningContent: m.ReasoningContent,
 		ToolCalls:        m.ToolCalls,

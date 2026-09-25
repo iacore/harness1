@@ -59,16 +59,15 @@ func TestChatRequestWireFormat(t *testing.T) {
 
 	req := &Request{
 		Model:           deepseek.ModelFlash,
-		Messages:        []Message{{Role: RoleSystem, Content: Text("be brief")}, {Role: RoleUser, Content: Text("hi")}},
-		Thinking:        &Thinking{Type: ThinkingEnabled},
+		Messages:        []Message{&SystemMessage{Text: "be brief"}, &UserMessage{Content: Text("hi")}},
+		Thinking:        EnableThinking(),
 		ReasoningEffort: EffortMax,
 		MaxTokens:       new(512),
-		ResponseFormat:  &ResponseFormat{Type: ResponseFormatJSONObject},
+		ResponseFormat:  JSONResponseFormat(),
 		Stop:            deepseek.StopSequences{"END"},
 		Temperature:     new(0.2),
 		TopP:            new(0.99),
 		Tools: []Tool{{
-			Type: ToolTypeFunction,
 			Function: Function{
 				Name:        "get_weather",
 				Description: "Get the weather.",
@@ -131,7 +130,7 @@ func TestChatOmitsUnsetParameters(t *testing.T) {
 	})
 	if _, err := client.Chat(context.Background(), &Request{
 		Model:    deepseek.ModelV4Pro,
-		Messages: []Message{{Role: RoleUser, Content: Text("hi")}},
+		Messages: []Message{&UserMessage{Content: Text("hi")}},
 	}); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
@@ -152,15 +151,15 @@ func TestChatMessageVariantsWireFormat(t *testing.T) {
 	if _, err := client.Chat(context.Background(), &Request{
 		Model: deepseek.ModelFlash,
 		Messages: []Message{
-			{Role: RoleUser, Content: Content{TextPart("what is this?"), ImageURLPart("https://example.com/a.png", DetailLow)}},
-			{Role: RoleAssistant, ToolCalls: []ToolCall{{
+			&UserMessage{Content: Content{TextPart("what is this?"), ImageURLPart("https://example.com/a.png", DetailLow)}},
+			&AssistantMessage{ToolCalls: []ToolCall{{
 				ID:       "call_1",
 				Type:     ToolTypeFunction,
 				Function: FunctionCall{Name: "get_weather", Arguments: `{"city":"Hangzhou"}`},
 				Index:    new(0),
 			}}},
 			ToolResult("call_1", "24C"),
-			{Role: RoleAssistant, Content: Text("It is "), Prefix: true, ReasoningContent: "thinking"},
+			&AssistantMessage{Content: Text("It is "), Prefix: true, ReasoningContent: "thinking"},
 		},
 		ToolChoice: new(NoToolChoice()),
 	}); err != nil {
@@ -226,7 +225,7 @@ func TestChatParsesResponse(t *testing.T) {
 
 	got, err := client.Chat(context.Background(), &Request{
 		Model:    deepseek.ModelFlash,
-		Messages: []Message{{Role: RoleUser, Content: Text("weather?")}},
+		Messages: []Message{&UserMessage{Content: Text("weather?")}},
 	})
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
@@ -260,7 +259,7 @@ func TestChatParsesResponse(t *testing.T) {
 	// The assistant message replays into the next request with its chain of
 	// thought and tool calls intact.
 	replay := got.Message().Message()
-	if replay.Role != RoleAssistant || len(replay.Content) != 0 || replay.ReasoningContent != "I should check the weather." {
+	if replay.Role() != RoleAssistant || len(replay.Content) != 0 || replay.ReasoningContent != "I should check the weather." {
 		t.Errorf("replayed message = %+v", replay)
 	}
 	if len(replay.ToolCalls) != 1 || replay.ToolCalls[0].ID != "call_1" {
@@ -293,8 +292,8 @@ func TestToolCallReplayRoundTrip(t *testing.T) {
 		io.WriteString(w, `{"id": "2", "object": "chat.completion", "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "Cloudy."}}]}`)
 	})
 
-	tools := []Tool{{Type: ToolTypeFunction, Function: Function{Name: "get_weather"}}}
-	messages := []Message{{Role: RoleUser, Content: Text("weather?")}}
+	tools := []Tool{{Function: Function{Name: "get_weather"}}}
+	messages := []Message{&UserMessage{Content: Text("weather?")}}
 	first, err := client.Chat(context.Background(), &Request{Model: deepseek.ModelFlash, Messages: messages, Tools: tools})
 	if err != nil {
 		t.Fatalf("first Chat: %v", err)
@@ -324,7 +323,7 @@ func TestChatRejectsStreamFlag(t *testing.T) {
 	_, err := client.Chat(context.Background(), &Request{
 		Model:    deepseek.ModelFlash,
 		Stream:   true,
-		Messages: []Message{{Role: RoleUser, Content: Text("hi")}},
+		Messages: []Message{&UserMessage{Content: Text("hi")}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "use ChatStream") {
 		t.Fatalf("err = %v", err)
@@ -372,8 +371,8 @@ func serveStream(t *testing.T, wantPath string) (*Client, *map[string]any) {
 func streamRequest() *Request {
 	return &Request{
 		Model:    deepseek.ModelFlash,
-		Messages: []Message{{Role: RoleUser, Content: Text("weather and date?")}},
-		Tools:    []Tool{{Type: ToolTypeFunction, Function: Function{Name: "get_weather"}}},
+		Messages: []Message{&UserMessage{Content: Text("weather and date?")}},
+		Tools:    []Tool{{Function: Function{Name: "get_weather"}}},
 	}
 }
 
@@ -524,14 +523,14 @@ func TestChatStreamReportsAPIError(t *testing.T) {
 }
 
 func TestChatBetaRequirements(t *testing.T) {
-	strictTool := []Tool{{Type: ToolTypeFunction, Function: Function{Name: "f", Strict: true}}}
-	prefix := []Message{{Role: RoleUser, Content: Text("hi")}, {Role: RoleAssistant, Content: Text("Once"), Prefix: true}}
+	strictTool := []Tool{{Function: Function{Name: "f", Strict: true}}}
+	prefix := []Message{&UserMessage{Content: Text("hi")}, &AssistantMessage{Content: Text("Once"), Prefix: true}}
 
 	t.Run("strict tools need the beta root", func(t *testing.T) {
 		client := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 			t.Error("no request expected")
 		})
-		_, err := client.Chat(context.Background(), &Request{Model: deepseek.ModelFlash, Messages: []Message{{Role: RoleUser, Content: Text("hi")}}, Tools: strictTool})
+		_, err := client.Chat(context.Background(), &Request{Model: deepseek.ModelFlash, Messages: []Message{&UserMessage{Content: Text("hi")}}, Tools: strictTool})
 		if err == nil || !strings.Contains(err.Error(), "WithBeta") {
 			t.Fatalf("err = %v", err)
 		}
@@ -560,6 +559,23 @@ func TestChatBetaRequirements(t *testing.T) {
 			t.Errorf("path = %q, want /beta/chat/completions", path)
 		}
 	})
+}
+
+func TestMessageRoles(t *testing.T) {
+	cases := []struct {
+		m    Message
+		role string
+	}{
+		{&SystemMessage{Text: "x"}, RoleSystem},
+		{&UserMessage{Content: Text("x")}, RoleUser},
+		{&AssistantMessage{}, RoleAssistant},
+		{&ToolMessage{}, RoleTool},
+	}
+	for _, tc := range cases {
+		if got := tc.m.Role(); got != tc.role {
+			t.Errorf("Role() = %q, want %q", got, tc.role)
+		}
+	}
 }
 
 func TestContentJSONForms(t *testing.T) {

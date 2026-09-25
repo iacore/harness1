@@ -94,7 +94,7 @@ type Delta struct {
 // choiceAccumulator assembles the deltas of one choice.
 type choiceAccumulator struct {
 	index        int
-	message      AssistantMessage
+	message      GeneratedMessage
 	toolCalls    map[int]*ToolCall
 	toolOrder    []int
 	finishReason string

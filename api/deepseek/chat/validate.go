@@ -22,8 +22,11 @@ func (r *Request) validate(stream bool) error {
 		return errors.New("deepseek: at least one message is required")
 	}
 	last := len(r.Messages) - 1
+	// calls collects the tool call ids the conversation has defined so far, so
+	// that a tool result can be checked against the call it answers.
+	calls := make(map[string]bool)
 	for i, m := range r.Messages {
-		if err := validateMessage(m, i, last); err != nil {
+		if err := validateMessage(m, i, last, calls); err != nil {
 			return err
 		}
 	}
@@ -56,17 +59,17 @@ func (r *Request) validate(stream bool) error {
 		return errors.New("deepseek: stream_options requires stream")
 	}
 	if r.ResponseFormat != nil {
-		switch r.ResponseFormat.Type {
-		case ResponseFormatText, ResponseFormatJSONObject:
+		switch r.ResponseFormat.typ {
+		case responseFormatText, responseFormatJSONObject:
 		default:
-			return fmt.Errorf("deepseek: response_format type %q is not supported", r.ResponseFormat.Type)
+			return fmt.Errorf("deepseek: response_format type %q is not supported", r.ResponseFormat.typ)
 		}
 	}
 	if r.Thinking != nil {
-		switch r.Thinking.Type {
-		case ThinkingEnabled, ThinkingDisabled:
+		switch r.Thinking.typ {
+		case thinkingEnabled, thinkingDisabled:
 		default:
-			return fmt.Errorf("deepseek: thinking type %q is not supported", r.Thinking.Type)
+			return fmt.Errorf("deepseek: thinking type %q is not supported", r.Thinking.typ)
 		}
 	}
 	switch r.ReasoningEffort {
@@ -82,6 +85,14 @@ func (r *Request) validate(stream bool) error {
 			return err
 		}
 	}
+	// In thinking mode the API needs the chain of thought of every tool-calling
+	// assistant turn replayed, which is what makes the model's next call
+	// consistent with the call it answers.
+	if len(r.Tools) > 0 && r.thinking() {
+		if err := validateReasoningReplay(r.Messages); err != nil {
+			return err
+		}
+	}
 	if r.UserID != "" && (len(r.UserID) > MaxUserIDLen || !userIDPattern.MatchString(r.UserID)) {
 		return fmt.Errorf("deepseek: user_id must be at most %d characters of %s", MaxUserIDLen, userIDPattern)
 	}
@@ -92,49 +103,96 @@ func (r *Request) validate(stream bool) error {
 // default and is turned off either by thinking.type or by reasoning_effort.
 func (r *Request) thinking() bool {
 	if r.Thinking != nil {
-		return r.Thinking.Type != ThinkingDisabled
+		return r.Thinking.typ != thinkingDisabled
 	}
 	return r.ReasoningEffort != EffortNone
 }
 
-func validateMessage(m Message, index, last int) error {
+// validateMessage checks one message against its role's constraints. calls
+// carries the tool call ids defined so far; an assistant message adds to it and
+// a tool message must already be in it.
+func validateMessage(m Message, index, last int, calls map[string]bool) error {
 	fail := func(format string, args ...any) error {
 		return fmt.Errorf("deepseek: messages[%d]: %s", index, fmt.Sprintf(format, args...))
 	}
-	switch m.Role {
-	case RoleSystem, RoleUser, RoleAssistant, RoleTool:
+	switch msg := m.(type) {
+	case nil:
+		return fail("message is required")
+	case *SystemMessage:
+		if msg.Text == "" {
+			return fail("content is required")
+		}
+	case *UserMessage:
+		if len(msg.Content) == 0 {
+			return fail("content is required")
+		}
+		if err := validateParts(msg.Content, RoleUser); err != nil {
+			return fail("%s", err)
+		}
+	case *AssistantMessage:
+		if err := validateParts(msg.Content, RoleAssistant); err != nil {
+			return fail("%s", err)
+		}
+		if msg.Prefix {
+			if index != last {
+				return fail("prefix is only allowed on the last message")
+			}
+			if len(msg.Content) == 0 {
+				return fail("prefix requires content")
+			}
+		}
+		for i, call := range msg.ToolCalls {
+			if err := validateToolCall(call, i, calls); err != nil {
+				return fail("%s", err)
+			}
+		}
+	case *ToolMessage:
+		if msg.ToolCallID == "" {
+			return fail("tool_call_id is required for %s messages", RoleTool)
+		}
+		if !calls[msg.ToolCallID] {
+			return fail("tool_call_id %q does not match an earlier assistant tool call", msg.ToolCallID)
+		}
 	default:
-		return fail("role %q is not supported", m.Role)
+		return fail("message type %T is not supported", m)
 	}
-	// A system or user message without content is meaningless; an assistant
-	// turn may only call tools, and a tool may return nothing.
-	if (m.Role == RoleSystem || m.Role == RoleUser) && len(m.Content) == 0 {
-		return fail("content is required")
-	}
-	for i, part := range m.Content {
-		if err := validatePart(part, m.Role); err != nil {
-			return fail("content[%d]: %s", i, err)
+	return nil
+}
+
+func validateParts(content Content, role string) error {
+	for i, part := range content {
+		if err := validatePart(part, role); err != nil {
+			return fmt.Errorf("content[%d]: %w", i, err)
 		}
 	}
-	if m.Prefix {
-		if index != last {
-			return fail("prefix is only allowed on the last message")
-		}
-		if m.Role != RoleAssistant {
-			return fail("prefix requires the %s role", RoleAssistant)
-		}
+	return nil
+}
+
+// validateToolCall checks one tool call and records its id in calls, so that a
+// later tool message can be matched to it and a duplicate id is caught.
+func validateToolCall(call ToolCall, i int, calls map[string]bool) error {
+	switch {
+	case call.ID == "":
+		return fmt.Errorf("tool_calls[%d].id is required", i)
+	case call.Type != ToolTypeFunction:
+		return fmt.Errorf("tool_calls[%d].type %q is not supported", i, call.Type)
+	case call.Function.Name == "":
+		return fmt.Errorf("tool_calls[%d].function.name is required", i)
 	}
-	if m.Role == RoleTool && m.ToolCallID == "" {
-		return fail("tool_call_id is required for %s messages", RoleTool)
+	if calls[call.ID] {
+		return fmt.Errorf("tool_calls[%d].id %q is used more than once", i, call.ID)
 	}
-	for i, call := range m.ToolCalls {
-		switch {
-		case call.ID == "":
-			return fail("tool_calls[%d].id is required", i)
-		case call.Type != ToolTypeFunction:
-			return fail("tool_calls[%d].type %q is not supported", i, call.Type)
-		case call.Function.Name == "":
-			return fail("tool_calls[%d].function.name is required", i)
+	calls[call.ID] = true
+	return nil
+}
+
+// validateReasoningReplay requires the chain of thought on every assistant turn
+// that calls tools, which the API needs when the request carries tools.
+func validateReasoningReplay(messages []Message) error {
+	for i, m := range messages {
+		a, ok := m.(*AssistantMessage)
+		if ok && len(a.ToolCalls) > 0 && a.ReasoningContent == "" {
+			return fmt.Errorf("deepseek: messages[%d]: reasoning_content is required on an assistant message that calls tools", i)
 		}
 	}
 	return nil
@@ -180,9 +238,6 @@ func validatePart(p Part, role string) error {
 func validateTools(tools []Tool) error {
 	seen := make(map[string]bool, len(tools))
 	for i, tool := range tools {
-		if tool.Type != ToolTypeFunction {
-			return fmt.Errorf("deepseek: tools[%d].type %q is not supported; only %q is", i, tool.Type, ToolTypeFunction)
-		}
 		name := tool.Function.Name
 		if name == "" {
 			return fmt.Errorf("deepseek: tools[%d].function.name is required", i)
@@ -199,24 +254,24 @@ func validateTools(tools []Tool) error {
 }
 
 func validateToolChoice(choice ToolChoice, thinking bool) error {
-	if choice.Function != "" {
-		if len(choice.Function) > MaxToolNameLen || !toolNamePattern.MatchString(choice.Function) {
-			return fmt.Errorf("deepseek: tool_choice function %q must be at most %d characters of %s", choice.Function, MaxToolNameLen, toolNamePattern)
+	if choice.function != "" {
+		if len(choice.function) > MaxToolNameLen || !toolNamePattern.MatchString(choice.function) {
+			return fmt.Errorf("deepseek: tool_choice function %q must be at most %d characters of %s", choice.function, MaxToolNameLen, toolNamePattern)
 		}
 		if thinking {
 			return errors.New("deepseek: naming a function in tool_choice is not supported in thinking mode")
 		}
 		return nil
 	}
-	switch choice.Mode {
-	case ToolChoiceModeNone, ToolChoiceModeAuto:
+	switch choice.mode {
+	case toolChoiceModeNone, toolChoiceModeAuto:
 		return nil
-	case ToolChoiceModeRequired:
+	case toolChoiceModeRequired:
 		if thinking {
 			return errors.New("deepseek: tool_choice \"required\" is not supported in thinking mode")
 		}
 		return nil
 	default:
-		return fmt.Errorf("deepseek: tool_choice %q is not supported", choice.Mode)
+		return fmt.Errorf("deepseek: tool_choice %q is not supported", choice.mode)
 	}
 }
