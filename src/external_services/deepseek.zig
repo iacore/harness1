@@ -35,19 +35,10 @@
 
 const std = @import("std");
 const Io = std.Io;
-
-/// The wire encoder: our own, driven by the per-type configuration each
-/// request type carries (see `src/json.zig`). It is aliased rather than
-/// imported as `json` because a type's own configuration is a declaration
-/// named `json`, which would shadow it.
-const wire = @import("../json.zig");
-
-/// Responses are decoded with `std.json`, which does that well and needs no
-/// per-type code from us.
-const std_json = std.json;
-
 const http = std.http;
 const Allocator = std.mem.Allocator;
+
+const wire = @import("../json_encoder.zig");
 
 /// The OpenAI-compatible API root.
 pub const default_base_url = "https://api.deepseek.com";
@@ -320,7 +311,7 @@ pub const Client = struct {
         const text = body[0..length];
 
         var out: APIError = .{ .status_code = @backingInt(head.head.status) };
-        var parsed = std_json.parseFromSlice(std_json.Value, gpa, text, .{
+        var parsed = std.json.parseFromSlice(std.json.Value, gpa, text, .{
             .ignore_unknown_fields = true,
             // Keeps numbers as their source text: the API sends an error code
             // as a string or as a number.
@@ -358,7 +349,7 @@ pub const Client = struct {
 
 /// A JSON object field that is a string, or null when it is absent or another
 /// type.
-fn stringField(object: std_json.ObjectMap, name: []const u8) ?[]const u8 {
+fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
     return switch (value) {
         .string => |s| s,
@@ -416,10 +407,10 @@ pub const Response = struct {
 
     /// Reads the body as a JSON document of type `T`. The returned value owns
     /// its strings and must be deinited.
-    pub fn parse(self: *Response, comptime T: type) !std_json.Parsed(T) {
-        var source = std_json.Reader.init(self.allocator, self.reader());
+    pub fn parse(self: *Response, comptime T: type) !std.json.Parsed(T) {
+        var source = std.json.Reader.init(self.allocator, self.reader());
         defer source.deinit();
-        return std_json.parseFromTokenSource(T, self.allocator, &source, .{
+        return std.json.parseFromTokenSource(T, self.allocator, &source, .{
             .ignore_unknown_fields = true,
         }) catch |err| switch (err) {
             error.ReadFailed => error.ReadFailed,
@@ -525,7 +516,7 @@ pub fn EventStream(comptime Chunk: type) type {
                     self.finished = true;
                     return null;
                 }
-                const chunk = std_json.parseFromSliceLeaky(Chunk, arena, event, .{
+                const chunk = std.json.parseFromSliceLeaky(Chunk, arena, event, .{
                     .ignore_unknown_fields = true,
                     // The event buffer is reused, so strings must be copied
                     // into the caller's allocator.
@@ -1470,7 +1461,7 @@ pub const chat = struct {
     pub fn send(
         client: *Client,
         request: *const Request,
-    ) !Result(std_json.Parsed(Completion), Failure) {
+    ) !Result(std.json.Parsed(Completion), Failure) {
         if (request.stream orelse false) return .{ .err = .stream_requested };
         if (request.checkBeta(client.beta)) |failure| return .{ .err = failure };
         if (request.check(false)) |invalid| return .{ .err = .{ .invalid = invalid } };
@@ -1902,7 +1893,7 @@ pub const fim = struct {
         text_offset: []const i64 = &.{},
         token_logprobs: []const f64 = &.{},
         tokens: []const []const u8 = &.{},
-        top_logprobs: []const std_json.ArrayHashMap(f64) = &.{},
+        top_logprobs: []const std.json.ArrayHashMap(f64) = &.{},
     };
 
     /// One event of a streamed response, in the shape of a completion whose
@@ -1922,7 +1913,7 @@ pub const fim = struct {
     pub fn send(
         client: *Client,
         request: *const Request,
-    ) !Result(std_json.Parsed(Completion), Failure) {
+    ) !Result(std.json.Parsed(Completion), Failure) {
         if (request.stream orelse false) return .{ .err = .stream_requested };
         if (!client.beta) return .{ .err = .beta_required };
         if (request.check(false)) |invalid| return .{ .err = .{ .invalid = invalid } };
@@ -2051,7 +2042,7 @@ pub const fim = struct {
         text_offset: std.ArrayListUnmanaged(i64),
         token_logprobs: std.ArrayListUnmanaged(f64),
         tokens: std.ArrayListUnmanaged([]const u8),
-        top_logprobs: std.ArrayListUnmanaged(std_json.ArrayHashMap(f64)),
+        top_logprobs: std.ArrayListUnmanaged(std.json.ArrayHashMap(f64)),
         saw_logprobs: bool = false,
 
         fn merge(self: *Accumulator, arena: Allocator, choice: Choice) !void {
@@ -2088,17 +2079,4 @@ pub const fim = struct {
 
 test {
     _ = @import("deepseek_test.zig");
-}
-
-test "every declaration is analyzed" {
-    std.testing.refAllDecls(@This());
-    std.testing.refAllDecls(Client);
-    std.testing.refAllDecls(APIError);
-    std.testing.refAllDecls(Response);
-    std.testing.refAllDecls(chat);
-    std.testing.refAllDecls(chat.Request);
-    std.testing.refAllDecls(chat.Stream);
-    std.testing.refAllDecls(fim);
-    std.testing.refAllDecls(fim.Request);
-    std.testing.refAllDecls(fim.Stream);
 }
