@@ -366,17 +366,38 @@ fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
 /// A body that breaks partway is not an error here: what arrived is what the
 /// caller has, and a count taken from the buffer's length instead of from this
 /// would hand out uninitialized memory, since an allocation does not zero it.
+///
+/// The body ending comes back as `error.EndOfStream` and as nothing else. A
+/// read that returns zero has moved the reader along without handing bytes
+/// over yet, which is what a reader that fills its own buffer first does, and
+/// what every TLS connection's reader does; it is a round to come back for
+/// rather than the end of anything.
 fn readUpTo(reader: *Io.Reader, buffer: []u8) usize {
     var writer = Io.Writer.fixed(buffer);
     var length: usize = 0;
     while (length < buffer.len) {
-        // The body ending is the normal way this stops, and a broken transport
-        // is the same answer from here: the bytes already read stand.
         const n = reader.stream(&writer, .limited(buffer.len - length)) catch break;
-        if (n == 0) break;
         length += n;
     }
     return length;
+}
+
+// A reader may fill its own buffer and hand back nothing for a round, which is
+// what the one behind every TLS connection does; `std.testing` ships a
+// stand-in for exactly that. Its bytes take coming back for on the next round,
+// so a read that treats a zero as the end of the body reads an empty one, and
+// every HTTPS error envelope comes out with nothing in it but the status.
+test "an error body is read through a reader that fills its own buffer" {
+    const testing = std.testing;
+    const body = "{\"error\":{\"message\":\"Rate limit reached\"}}";
+
+    var input: Io.Reader = .fixed(body);
+    var middle: [8]u8 = undefined;
+    var indirect: testing.ReaderIndirect = .init(&input, &middle);
+
+    var buffer: [128]u8 = undefined;
+    const length = readUpTo(&indirect.interface, &buffer);
+    try testing.expectEqualStrings(body, buffer[0..length]);
 }
 
 /// A response to a 2xx request whose body has not been read yet.
