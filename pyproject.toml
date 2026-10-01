@@ -1,0 +1,32 @@
+# The Python client under `src/python`, installable so that `import harness1`
+# works from anywhere:
+#
+#     python3 -m pip install --user -e .
+#
+# It is not built from the Zig and the Zig is not built from it: the two share
+# the API and the rule for finding a key, and nothing else. Editable, because
+# the module is a scratch surface meant to be edited in place — the install is a
+# path into this checkout, not a copy of it.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harness1"
+# The same version the Zig package carries, which is to say none yet.
+version = "0.0.0"
+description = "A stdlib-only DeepSeek chat-completions client: prompts, tool calls and agent loops over the API."
+requires-python = ">=3.10"
+license-files = ["COPYING.md"]
+# Nothing outside the standard library is imported, and this is the point of it.
+dependencies = []
+
+[tool.setuptools]
+# The module lives beside the Zig it belongs to, in the layout this repository
+# already has, rather than in a package directory of its own.
+package-dir = { "" = "src/python" }
+# The client, and only the client. `loop.py` and `play.py` are programs with a
+# command line, run from the source tree: nothing imports either, and the loop
+# `loop.py` writes out in full is the one `Deepseek.run()` already is.
+py-modules = ["harness1"]
