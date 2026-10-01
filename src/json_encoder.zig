@@ -24,8 +24,8 @@
 //!         null. Nulls are skipped by default.
 //!       * `.skip_if_empty = true` — skip an empty string or an empty slice.
 //!       * `.skip_if_false = true` — skip a `false` flag.
-//!       * `.raw = true` — write the string as pre-encoded JSON rather than as
-//!         a JSON string. Use `Raw` instead of setting this by hand.
+//!   * `.raw = true` — write the string as pre-encoded JSON rather than as a
+//!     JSON string. `Raw` declares this; prefer it to setting it by hand.
 //!   * `.bare = true` — write the value itself rather than as an object; for a
 //!     union, write the active variant's payload with no tag.
 //!   * `.tag_key = "type"` — for an enum, write `{"type":"variant"}` instead of
@@ -44,9 +44,11 @@
 //! Fields are written in declaration order, which is the order the wire format
 //! wants, and a field's own name is its JSON key unless a rule renames it.
 //!
-//! Strings are written as UTF-8 with `"`, `\` and the control characters
-//! escaped; bytes that are not valid UTF-8 are passed through rather than
-//! silently turned into an array, which is what `std.json` does with them.
+//! Strings are written verbatim apart from the characters JSON requires to be
+//! escaped — `"`, `\` and U+0000 to U+001F — so a string that is not UTF-8 is
+//! what makes the output invalid JSON, not what this encoder does with it. The
+//! bytes go through as they are, which is where this differs from `std.json`,
+//! that writes them as an array of numbers.
 
 const std = @import("std");
 const Io = std.Io;
@@ -54,13 +56,17 @@ const Io = std.Io;
 pub const Error = Io.Writer.Error || error{
     /// The value nests deeper than this encoder writes.
     DepthTooDeep,
+    /// A float JSON cannot carry. `null` is not the same value, so this is
+    /// reported rather than written.
+    NotFinite,
 };
 
 /// The deepest object or array this encoder writes before giving up. The API's
 /// payloads are nowhere near it; it bounds the comma bookkeeping.
 pub const max_depth = 64;
 
-/// How deep beyond `max_depth` the encoder refuses to go.
+/// Writes JSON: the writer, and the per-level state that decides where the
+/// separators go.
 pub const Encoder = struct {
     out: *Io.Writer,
     /// Per level: whether a separator is needed before the next element, and
@@ -78,12 +84,19 @@ pub const Encoder = struct {
         return encode(self, value);
     }
 
+    /// Writes the separator a level owes before its next member, and records
+    /// that it now has one. `after_key` is the caller's to set: a value
+    /// following a key is not a member yet, an element is.
+    fn separate(self: *Encoder, level: usize) Error!void {
+        if (self.comma[level] and !self.after_key[level]) try self.out.writeByte(',');
+        self.comma[level] = true;
+    }
+
     /// Writes the separator an element at the current level needs.
     fn element(self: *Encoder) Error!void {
         if (self.depth == 0) return;
         const level = self.depth - 1;
-        if (self.comma[level] and !self.after_key[level]) try self.out.writeByte(',');
-        self.comma[level] = true;
+        try self.separate(level);
         self.after_key[level] = false;
     }
 
@@ -123,8 +136,7 @@ pub const Encoder = struct {
     /// Writes an object key. The following value must be written next.
     pub fn key(self: *Encoder, name: []const u8) Error!void {
         const level = self.depth - 1;
-        if (self.comma[level] and !self.after_key[level]) try self.out.writeByte(',');
-        self.comma[level] = true;
+        try self.separate(level);
         self.after_key[level] = true;
         try writeString(self.out, name);
         try self.out.writeByte(':');
@@ -158,7 +170,7 @@ pub const Encoder = struct {
 
     pub fn float(self: *Encoder, value: f64) Error!void {
         try self.element();
-        if (!std.math.isFinite(value)) return error.WriteFailed;
+        if (!std.math.isFinite(value)) return error.NotFinite;
         try self.out.print("{d}", .{value});
     }
 };
@@ -169,10 +181,6 @@ pub const Raw = struct {
     text: []const u8,
 
     pub const json = .{ .raw = true };
-
-    pub fn jsonEncode(e: *Encoder, value: Raw) Error!void {
-        return e.raw(value.text);
-    }
 };
 
 /// Encodes `value` with a fresh encoder.
@@ -233,7 +241,6 @@ fn encodeSlice(e: *Encoder, value: anytype) Error!void {
     return e.endArray();
 }
 
-/// Writes the fields of a struct into the object the caller has opened.
 /// Writes the fields of a struct into the object the caller has opened.
 fn encodeFields(
     e: *Encoder,
@@ -422,7 +429,6 @@ pub const Rule = struct {
     skip_if_null: bool = true,
     skip_if_empty: bool = false,
     skip_if_false: bool = false,
-    raw: bool = false,
 };
 
 /// One union variant's rules, all optional.
