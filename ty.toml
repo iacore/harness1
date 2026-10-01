@@ -1,0 +1,18 @@
+# `src/python/` is a scratch client, not part of the build: nothing there is
+# compiled by, or imported from, the Zig. It is still type-checked, with ty:
+#
+#     ty check        # from the repository root; this file is what it reads
+#
+# The annotations throughout `src/python/harness1.py` are what give that check
+# something to read. Without them ty has nothing to verify and reports nothing.
+
+[rules]
+# Off by default. On here because the file is typed code over the API's untyped
+# JSON, and this is the rule that catches a function declared to return `str`
+# handing back whatever the payload happened to hold.
+unsound-return-statement = "error"
+
+# `missing-override-decorator` is deliberately left off. It would want
+# `@override` on the `__str__`, `__repr__`, `__setattr__` and `__setitem__` of
+# `Message`, `Tools` and `Deepseek`, and `typing.override` is 3.12 while the
+# floor for this file is 3.10.

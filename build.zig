@@ -26,6 +26,12 @@ pub fn build(b: *std.Build) void {
     );
     b.getInstallStep().dependOn(&credentials.step);
 
+    // `src/python/` is a scratch client that talks to the API directly, in
+    // Python and nothing else: it neither builds from nor loads anything here,
+    // so the harness needs no Python but the helper above. The one part the
+    // build has in it is `zig build check_python`, which runs the type checker
+    // over it — `ty.toml` is what that check reads.
+
     const exe = b.addExecutable(.{
         .name = "harness1",
         .root_module = b.createModule(.{
@@ -73,6 +79,18 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+
+    // The Python client under src/python, type-checked. Not part of the default
+    // step: that has to build the harness with nothing but Zig, and `ty` is not
+    // vendored, so this is the step that needs it on the PATH. Installing it is
+    // `uv tool install ty` (or pipx, or `pip install ty`); `ty.toml` at the
+    // root says what is checked and how strictly.
+    const check_python_step = b.step("check_python", "Type-check the Python client under src/python");
+    const ty_check = b.addSystemCommand(&.{ "ty", "check" });
+    // Run from the build root, where `ty.toml` is, so the step checks this
+    // checkout's Python rather than whatever directory it was invoked from.
+    ty_check.setCwd(b.path("."));
+    check_python_step.dependOn(&ty_check.step);
 
     // Runs the playground against the live API. Separate from the default
     // step, which must not need a key or a network.

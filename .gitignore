@@ -1,3 +1,5 @@
 .zig-cache/
 zig-out/
 __pycache__/
+# Written into src/python by `pip install -e .`, which is where the module is.
+*.egg-info/
