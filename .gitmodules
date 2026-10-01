@@ -1,3 +1,0 @@
-[submodule "research/libcurl-bindings"]
-	path = research/libcurl-bindings
-	url = git@github.com:iacore/libcurl-bindings-catalog.git
