@@ -319,7 +319,7 @@ test "the documented chat request body" {
         \\{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}
     ;
     const messages = [_]chat.Message{
-        .{ .system = .{ .text = "be brief" } },
+        .{ .system = .{ .content = "be brief" } },
         .{ .user = .{ .content = chat.text("hi") } },
     };
     const tools = [_]chat.Tool{.{
@@ -751,7 +751,7 @@ test "the documented chat parameter limits" {
     const long_image_url = [_]chat.Message{.{ .user = .{ .content = .{ .parts = &.{chat.imageUrlPart(long_url, null)} } } }};
     const empty_text = [_]chat.Message{.{ .user = .{ .content = .{ .parts = &.{chat.textPart("")} } } }};
     const empty_user = [_]chat.Message{.{ .user = .{ .content = chat.text("") } }};
-    const empty_system = [_]chat.Message{.{ .system = .{ .text = "" } }};
+    const empty_system = [_]chat.Message{.{ .system = .{ .content = "" } }};
     const tool_without_id = [_]chat.Message{ user, .{ .tool = .{ .tool_call_id = "", .content = "ok" } } };
     const empty_tool_result = [_]chat.Message{ user, .{ .assistant = .{ .tool_calls = &calls } }, .{ .tool = chat.toolResult("c1", "") } };
     const assistant_without_content = [_]chat.Message{ assistant, .{ .assistant = .{ .content = chat.text("") } } };

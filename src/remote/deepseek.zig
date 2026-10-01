@@ -749,9 +749,7 @@ pub const chat = struct {
 
     /// The instruction that steers the model.
     pub const SystemMessage = struct {
-        text: []const u8,
-
-        pub const json = .{ .fields = .{ .text = .{ .key = "content" } } };
+        content: []const u8,
     };
 
     /// Input from the caller: text, and images referenced by URL or uploaded
@@ -1118,7 +1116,7 @@ pub const chat = struct {
     ) ?Invalid {
         switch (message) {
             .system => |system| {
-                if (system.text.len == 0) return .{ .message_content_required = index };
+                if (system.content.len == 0) return .{ .message_content_required = index };
             },
             .user => |user| {
                 if (contentLength(user.content) == 0) return .{ .message_content_required = index };
