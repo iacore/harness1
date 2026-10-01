@@ -936,17 +936,21 @@ pub const chat = struct {
         pub const json = .{ .tag_key = "type" };
     };
 
-    /// The thinking effort. `minimal`, `medium`, `xhigh` and `ultra` are
-    /// accepted for compatibility with other clients and mapped by the API:
-    /// minimal to low, medium and xhigh to high, ultra to max.
+    /// How hard the model is asked to think: the levels that select a budget,
+    /// and only those. `none` turns thinking off rather than lowering it; the
+    /// other three are the budgets, of which `high` is the default and `max`
+    /// is the one that also raises the default `max_tokens` to 128K.
+    ///
+    /// The API takes other clients' spellings of these levels and maps them
+    /// onto one of the four — the reference page lists `minimal` for `low` and
+    /// `medium` and `xhigh` for `high`, and accepts `ultra` besides, which it
+    /// does not list — so there is nothing for this type to name them by: they
+    /// select no budget of their own, and a caller who wants one of those
+    /// spellings wants the level it stands for.
     pub const ReasoningEffort = enum {
         none,
-        minimal,
         low,
-        medium,
         high,
-        xhigh,
-        ultra,
         max,
     };
 
@@ -971,7 +975,7 @@ pub const chat = struct {
         /// Toggles the chain of thought, which is enabled by default.
         thinking: ?Thinking = null,
 
-        /// Selects the thinking effort. `.none` disables thinking mode;
+        /// Selects the thinking budget. `.none` disables thinking mode;
         /// `.high` is the default. Has no effect in non-thinking mode.
         reasoning_effort: ?ReasoningEffort = null,
 
