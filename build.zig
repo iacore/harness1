@@ -41,16 +41,21 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
-    // omp's credential store is a SQLite database, so the library is linked in.
-    // Its headers are not: src/sqlite.zig declares the entry points it calls,
-    // and pkg-config is skipped so the link is a plain -lsqlite3.
+    // omp's credential store is a SQLite database, and reading it is left to a
+    // Python helper rather than to a linked library: the build stays free of
+    // SQL, and of libc with it.
     //
-    // libc comes with it, and has to be asked for explicitly: libsqlite3 pulls
-    // glibc into the process either way, but a binary that does not link libc
-    // never runs glibc's startup, so the first `malloc` it makes from inside
-    // SQLite reads a thread-local that was never set up and faults.
-    mod.linkSystemLibrary("sqlite3", .{ .use_pkg_config = .no });
-    mod.link_libc = true;
+    // It is not installed to `bin` because it is not a program — the harness
+    // runs it through `python3`. src/env/omp.zig looks for it at exactly this
+    // path, beside the executable's `bin`, so the two have to agree.
+    const credentials_source = b.root.joinString(b.allocator, "src/credentials.py") catch
+        @panic("OOM");
+    const credentials = b.addInstallFileWithDir(
+        b.path("src/credentials.py"),
+        .lib,
+        "harness1/credentials.py",
+    );
+    b.getInstallStep().dependOn(&credentials.step);
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
@@ -172,6 +177,10 @@ pub fn build(b: *std.Build) void {
     const playground_step = b.step("deepseek_playground", "Run the DeepSeek playground");
     const run_playground = b.addRunArtifact(playground);
     run_playground.addPassthruArgs();
+    // The playground runs out of the build cache rather than from an install
+    // prefix, so it cannot find the helper beside itself; the source copy is
+    // the same file the install puts under `lib`.
+    run_playground.setEnvironmentVariable("HARNESS1_CREDENTIALS", credentials_source);
     playground_step.dependOn(&run_playground.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.

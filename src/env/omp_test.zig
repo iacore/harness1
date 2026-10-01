@@ -25,7 +25,7 @@ test "the environment variable is the key when it is set" {
     try environ.put("DEEPSEEK_API_KEY", "sk-from-environment");
     try environ.put("HOME", no_home);
 
-    const key = (try omp.apiKey(allocator, &environ, deepseek)) orelse
+    const key = (try omp.apiKey(allocator, testing.io, &environ, deepseek)) orelse
         return error.ExpectedKey;
     // The key is the caller's, not the environment's own storage: freeing it
     // must leave the map holding what it held.
@@ -41,7 +41,7 @@ test "an empty environment variable is not a key" {
     try environ.put("DEEPSEEK_API_KEY", "");
     try environ.put("HOME", no_home);
 
-    try testing.expectEqual(null, try omp.apiKey(allocator, &environ, deepseek));
+    try testing.expectEqual(null, try omp.apiKey(allocator, testing.io, &environ, deepseek));
 }
 
 test "neither a variable nor a home directory is null rather than an error" {
@@ -49,5 +49,5 @@ test "neither a variable nor a home directory is null rather than an error" {
     var environ = std.process.Environ.Map.init(allocator);
     defer environ.deinit();
 
-    try testing.expectEqual(null, try omp.apiKey(allocator, &environ, deepseek));
+    try testing.expectEqual(null, try omp.apiKey(allocator, testing.io, &environ, deepseek));
 }

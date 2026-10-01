@@ -5,29 +5,38 @@
 //! Deciding points:
 //!
 //!   * The store is omp's own SQLite database, `~/.omp/agent/agent.db`, whose
-//!     `auth_credentials` table holds one JSON object per credential. It is
-//!     opened read-only through the SQLite library the harness links, with the
-//!     provider name bound as a parameter rather than written into the
-//!     statement; a store that does not exist yet is not an error, it just
-//!     means there is no stored key.
+//!     `auth_credentials` table holds one JSON object per credential. Reading
+//!     it is left to `credentials.py`, a Python helper installed beside the
+//!     harness, so that SQLite stays out of this build: the harness links no
+//!     SQL, and the machine's own Python reads the store with the SQLite it
+//!     already has.
+//!   * The helper is handed a provider name and an absolute path, never a
+//!     statement, so nothing this file passes can be SQL, and the helper needs
+//!     no environment of its own to find the store.
 //!   * A key is a `[]const u8` owned by the allocator the caller passed,
 //!     whichever source it came from, so the caller always frees it and never
 //!     has to ask where it came from.
-//!   * A missing key is `null`, not an error: what to tell the operator —
-//!     which variable to set, which `omp` command to run — is the caller's
-//!     decision, and only the caller knows the provider's name for it. A store
-//!     that is there and will not answer is an error instead, because that is
-//!     not "no credential", it is a store that is not what this file thinks it
-//!     is.
+//!   * A store that is not there yields no key, as does a credential that is
+//!     not an API key. A store that is there and could not be read is an
+//!     error, because that is not "no credential", it is a store that is not
+//!     what this file thinks it is.
 
 const std = @import("std");
+const Io = std.Io;
 const Allocator = std.mem.Allocator;
-
-const sqlite = @import("../root.zig").sqlite;
 
 /// Where omp keeps the credentials it authenticates providers with, relative
 /// to the home directory.
 pub const credentials_path = ".omp/agent/agent.db";
+
+/// The helper, under the install prefix's `lib`. Not `bin`: a program belongs
+/// there, and this is not one, it is run through `python3`. Keep in step with
+/// build.zig, which installs it at exactly this path.
+const helper_path = "lib/harness1/credentials.py";
+
+/// Names the helper, for an executable that is not where the install put it —
+/// the playground runs out of the build cache, and build.zig tells it this.
+pub const helper_var = "HARNESS1_CREDENTIALS";
 
 /// A provider this harness can authenticate with: the name omp's store lists
 /// it under, and the environment variable that takes precedence over the
@@ -47,65 +56,96 @@ pub const Provider = struct {
 
 /// The ways reading the store can fail. A store that is absent, or that has no
 /// credential for the provider, is not among them.
-pub const Error = sqlite.Error;
+pub const Error = Allocator.Error || error{
+    /// The helper could not be run: `python3` is not on the PATH, or no
+    /// `credentials.py` is where one is expected. The store was never asked.
+    HelperUnavailable,
+    /// The helper ran and could not read the store. It said why on its stderr,
+    /// which is dropped: the caller can do nothing with it that this error
+    /// does not already say.
+    HelperFailed,
+};
 
 /// The key `provider` is authenticated with: its environment variable when
 /// that is set and non-empty, otherwise the credential omp stores for it.
 /// Null when neither has one.
 pub fn apiKey(
     allocator: Allocator,
+    io: Io,
     environ: *const std.process.Environ.Map,
     provider: Provider,
 ) Error!?[]const u8 {
     if (environ.get(provider.env_var)) |key| {
         if (key.len != 0) return try allocator.dupe(u8, key);
     }
-    return storedApiKey(allocator, environ, provider.store_name);
+    return storedApiKey(allocator, io, environ, provider.store_name);
 }
 
-/// The `key` field of the credential omp stores for `store_name`, or null when
-/// there is no home directory, no store, or no enabled row.
-///
-/// Only the `key` shape is read. A credential omp logs in to and refreshes —
-/// an OAuth token, stored under `access` — is not an API key, and is left
-/// alone.
+/// The key out of the credential omp stores for `store_name`, or null when
+/// there is no home directory, no store, or no enabled credential for it.
 fn storedApiKey(
     allocator: Allocator,
+    io: Io,
     environ: *const std.process.Environ.Map,
     store_name: []const u8,
 ) Error!?[]const u8 {
     const home = environ.get("HOME") orelse return null;
     const db = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, credentials_path });
     defer allocator.free(db);
+    // Nothing to read: do not go looking for something to read it with.
+    std.Io.Dir.cwd().access(io, db, .{}) catch return null;
 
-    const data = try sqlite.queryFirstText(allocator, db, newest_credential_sql, store_name) orelse
-        return null;
-    defer allocator.free(data);
+    const helper = try helperPath(allocator, io, environ);
+    defer allocator.free(helper);
+    // Separated from the store's own failures, so that a broken install does
+    // not read as a store that refused to answer.
+    std.Io.Dir.cwd().access(io, helper, .{}) catch return error.HelperUnavailable;
 
-    return try jsonStringField(allocator, data, "key");
+    const argv = [_][]const u8{ "python3", helper, db, store_name };
+    const answered = std.process.run(allocator, io, .{ .argv = &argv }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.HelperUnavailable,
+    };
+    defer allocator.free(answered.stdout);
+    defer allocator.free(answered.stderr);
+
+    const exit_code = switch (answered.term) {
+        .exited => |code| code,
+        else => return error.HelperFailed,
+    };
+    switch (exit_code) {
+        // The helper's contract, read off its exit status rather than guessed
+        // from its output: a key, or nothing and a reason.
+        0 => {},
+        1 => return null,
+        else => return error.HelperFailed,
+    }
+
+    const key = std.mem.trim(u8, answered.stdout, " \t\r\n");
+    if (key.len == 0) return null;
+    return try allocator.dupe(u8, key);
 }
 
-/// The `data` of the newest credential omp has enabled for one provider. `?1`
-/// is the provider name, bound by the caller rather than written in here.
-const newest_credential_sql: [:0]const u8 =
-    "SELECT data FROM auth_credentials WHERE provider=?1" ++
-    " AND disabled_cause IS NULL ORDER BY updated_at DESC LIMIT 1;";
-
-/// The string value of `field` in a flat JSON object, e.g. the `sk-...` in
-/// `{"key":"sk-...","source":"login"}`. Keys and tokens carry no escapes, so a
-/// scan for the quoted field is enough; null when the field is absent or
-/// empty.
-fn jsonStringField(
+/// Where the helper is: `HARNESS1_CREDENTIALS` when the environment names one,
+/// otherwise `credentials.py` under the `lib` beside the `bin` the running
+/// executable is in.
+fn helperPath(
     allocator: Allocator,
-    object: []const u8,
-    comptime field: []const u8,
-) Allocator.Error!?[]const u8 {
-    const needle = "\"" ++ field ++ "\":\"";
-    const start = std.mem.indexOf(u8, object, needle) orelse return null;
-    const value_start = start + needle.len;
-    const end = std.mem.indexOfScalarPos(u8, object, value_start, '"') orelse return null;
-    if (end == value_start) return null;
-    return try allocator.dupe(u8, object[value_start..end]);
+    io: Io,
+    environ: *const std.process.Environ.Map,
+) Error![]u8 {
+    if (environ.get(helper_var)) |path| {
+        if (path.len != 0) return try allocator.dupe(u8, path);
+    }
+    const executable_dir = std.process.executableDirPathAlloc(io, allocator) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        // Nowhere to look is the same answer as looking and finding nothing.
+        else => return error.HelperUnavailable,
+    };
+    defer allocator.free(executable_dir);
+    // `..` stays unresolved: the pair of directories is the install layout,
+    // and resolving it here would only restate what the `join` says.
+    return std.fs.path.join(allocator, &.{ executable_dir, "..", helper_path });
 }
 
 test {
