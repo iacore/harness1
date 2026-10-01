@@ -3,3 +3,6 @@ zig-out/
 __pycache__/
 # Written into src/python by `pip install -e .`, which is where the module is.
 *.egg-info/
+# Written at the root by `pip wheel .` or `python -m build`, which stage the
+# package there before producing a wheel. Not `zig-out`, which is `zig build`'s.
+build/
