@@ -6,20 +6,24 @@
 //!
 //!   * The store is omp's own SQLite database, `~/.omp/agent/agent.db`, whose
 //!     `auth_credentials` table holds one JSON object per credential. It is
-//!     read through the `sqlite3` command-line tool rather than a linked
-//!     SQLite, because the harness does not otherwise depend on one; a missing
-//!     `sqlite3`, or a store that does not exist yet, is not an error, it just
+//!     opened read-only through the SQLite library the harness links, with the
+//!     provider name bound as a parameter rather than written into the
+//!     statement; a store that does not exist yet is not an error, it just
 //!     means there is no stored key.
 //!   * A key is a `[]const u8` owned by the allocator the caller passed,
 //!     whichever source it came from, so the caller always frees it and never
 //!     has to ask where it came from.
 //!   * A missing key is `null`, not an error: what to tell the operator —
 //!     which variable to set, which `omp` command to run — is the caller's
-//!     decision, and only the caller knows the provider's name for it.
+//!     decision, and only the caller knows the provider's name for it. A store
+//!     that is there and will not answer is an error instead, because that is
+//!     not "no credential", it is a store that is not what this file thinks it
+//!     is.
 
 const std = @import("std");
-const Io = std.Io;
 const Allocator = std.mem.Allocator;
+
+const sqlite = @import("../root.zig").sqlite;
 
 /// Where omp keeps the credentials it authenticates providers with, relative
 /// to the home directory.
@@ -41,70 +45,51 @@ pub const Provider = struct {
     };
 };
 
-pub const Error = Allocator.Error || error{
-    /// The store name would not survive being written into the query.
-    InvalidStoreName,
-};
+/// The ways reading the store can fail. A store that is absent, or that has no
+/// credential for the provider, is not among them.
+pub const Error = sqlite.Error;
 
 /// The key `provider` is authenticated with: its environment variable when
 /// that is set and non-empty, otherwise the credential omp stores for it.
 /// Null when neither has one.
 pub fn apiKey(
     allocator: Allocator,
-    io: Io,
     environ: *const std.process.Environ.Map,
     provider: Provider,
 ) Error!?[]const u8 {
-    try validateStoreName(provider.store_name);
     if (environ.get(provider.env_var)) |key| {
         if (key.len != 0) return try allocator.dupe(u8, key);
     }
-    return storedApiKey(allocator, io, environ, provider.store_name);
+    return storedApiKey(allocator, environ, provider.store_name);
 }
 
 /// The `key` field of the credential omp stores for `store_name`, or null when
-/// there is no home directory, no store, no `sqlite3` on the PATH, or no
-/// enabled row.
+/// there is no home directory, no store, or no enabled row.
 ///
 /// Only the `key` shape is read. A credential omp logs in to and refreshes —
 /// an OAuth token, stored under `access` — is not an API key, and is left
 /// alone.
 fn storedApiKey(
     allocator: Allocator,
-    io: Io,
     environ: *const std.process.Environ.Map,
     store_name: []const u8,
 ) Error!?[]const u8 {
     const home = environ.get("HOME") orelse return null;
     const db = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, credentials_path });
     defer allocator.free(db);
-    const query = try std.fmt.allocPrint(allocator, newest_credential_sql, .{store_name});
-    defer allocator.free(query);
 
-    const argv = [_][]const u8{ "sqlite3", db, query };
-    // A store that is not there, or a machine without the tool, leaves the
-    // process with nothing to fall back to rather than a failure to report.
-    const run = std.process.run(allocator, io, .{ .argv = &argv }) catch return null;
-    defer allocator.free(run.stdout);
-    defer allocator.free(run.stderr);
-    if (run.term.exited != 0) return null;
+    const data = try sqlite.queryFirstText(allocator, db, newest_credential_sql, store_name) orelse
+        return null;
+    defer allocator.free(data);
 
-    return try jsonStringField(allocator, run.stdout, "key");
+    return try jsonStringField(allocator, data, "key");
 }
 
-/// The `data` of the newest credential omp has enabled for one provider.
-const newest_credential_sql =
-    "SELECT data FROM auth_credentials WHERE provider='{s}'" ++
+/// The `data` of the newest credential omp has enabled for one provider. `?1`
+/// is the provider name, bound by the caller rather than written in here.
+const newest_credential_sql: [:0]const u8 =
+    "SELECT data FROM auth_credentials WHERE provider=?1" ++
     " AND disabled_cause IS NULL ORDER BY updated_at DESC LIMIT 1;";
-
-/// `store_name` is written into a single-quoted SQL literal, so a quote in it
-/// would end the literal and leave the rest of the name to be read as SQL. The
-/// names this file defines carry none; a caller-supplied one that does is
-/// rejected instead of run.
-fn validateStoreName(store_name: []const u8) error{InvalidStoreName}!void {
-    if (store_name.len == 0) return error.InvalidStoreName;
-    if (std.mem.indexOfScalar(u8, store_name, '\'') != null) return error.InvalidStoreName;
-}
 
 /// The string value of `field` in a flat JSON object, e.g. the `sk-...` in
 /// `{"key":"sk-...","source":"login"}`. Keys and tokens carry no escapes, so a

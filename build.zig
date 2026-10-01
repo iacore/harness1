@@ -41,6 +41,17 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // omp's credential store is a SQLite database, so the library is linked in.
+    // Its headers are not: src/sqlite.zig declares the entry points it calls,
+    // and pkg-config is skipped so the link is a plain -lsqlite3.
+    //
+    // libc comes with it, and has to be asked for explicitly: libsqlite3 pulls
+    // glibc into the process either way, but a binary that does not link libc
+    // never runs glibc's startup, so the first `malloc` it makes from inside
+    // SQLite reads a thread-local that was never set up and faults.
+    mod.linkSystemLibrary("sqlite3", .{ .use_pkg_config = .no });
+    mod.link_libc = true;
+
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
     // to the module defined above, it's sometimes preferable to split business
