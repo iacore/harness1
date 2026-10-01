@@ -12,7 +12,6 @@ const Allocator = std.mem.Allocator;
 
 const deepseek = @import("deepseek.zig");
 const Client = deepseek.Client;
-const APIError = deepseek.APIError;
 const chat = deepseek.chat;
 const fim = deepseek.fim;
 
@@ -206,35 +205,12 @@ fn testClient(allocator: Allocator, server: *const TestServer, beta: bool) !Clie
     });
 }
 
-// A client that must never send anything, since nothing is listening.
-fn offlineClient(allocator: Allocator) !Client {
-    return Client.init(allocator, testing.io, "test-key", .{
-        .base_url = "http://127.0.0.1:1",
-    });
-}
-
 fn expectRequest(recorded: Recorded, target: []const u8) !void {
     try testing.expectEqualStrings("POST", recorded.method);
     try testing.expectEqualStrings(target, recorded.target);
     try testing.expectEqualStrings("Bearer test-key", recorded.authorization);
     try testing.expectEqualStrings("application/json", recorded.content_type);
 }
-
-// Encodes a value the way the client encodes request bodies, so that a test
-// can compare against bytes rather than against a decoded map.
-fn encode(gpa: Allocator, value: anytype) ![]u8 {
-    var out: Io.Writer.Allocating = .init(gpa);
-    errdefer out.deinit();
-    try json.Stringify.value(value, .{}, &out.writer);
-    return out.toOwnedSlice();
-}
-
-fn expectEncoded(gpa: Allocator, value: anytype, want: []const u8) !void {
-    const encoded = try encode(gpa, value);
-    defer gpa.free(encoded);
-    try testing.expectEqualStrings(want, encoded);
-}
-
 
 // The payload of a `Result`, by variant name.
 fn Payload(comptime R: type, comptime which: []const u8) type {
@@ -627,15 +603,15 @@ test "the documented chat completion response" {
     try testing.expectEqual(43, usage.completion_tokens);
     try testing.expectEqual(17, usage.prompt_tokens);
     try testing.expectEqual(60, usage.total_tokens);
-    try testing.expectEqual(
-        usage.prompt_tokens,
-        usage.prompt_cache_hit_tokens + usage.prompt_cache_miss_tokens,
-    );
+    try testing.expectEqual(1, usage.prompt_cache_hit_tokens);
+    try testing.expectEqual(16, usage.prompt_cache_miss_tokens);
     try testing.expectEqual(1, usage.prompt_tokens_details.?.cached_tokens);
     try testing.expectEqual(30, usage.completion_tokens_details.?.reasoning_tokens);
 
-    // The reply replays as an assistant turn, which tool calling needs.
+    // The reply replays as an assistant turn, which tool calling needs: the
+    // tool calls, and the chain of thought the API requires alongside them.
     const replay = completion.message().toAssistant();
+    try testing.expectEqualStrings("I should check the weather.", replay.reasoning_content.?);
     try testing.expectEqual(0, replay.content.text.len);
     try testing.expectEqualStrings("call_1", replay.tool_calls.?[0].id.?);
 }
@@ -713,6 +689,12 @@ test "the documented chat stream" {
         collected.value.choices[0].message.tool_calls[0].function.arguments,
     );
     try testing.expectEqual(17, collected.value.usage.?.prompt_tokens);
+    // The request goes out with `stream` set whatever the request said — it
+    // was left null here — which is what makes this endpoint answer with
+    // events.
+    try testing.expectEqualStrings(
+        \\{"model":"deepseek-flash","messages":[{"role":"user","content":"weather and date?"}],"stream":true}
+    , server.recorded.items[0].body);
     server.finish();
     try server.expectNoFailures();
 }
@@ -736,6 +718,9 @@ test "the documented chat parameter limits" {
     const too_many_stops = try gpa.alloc([]const u8, chat.max_stop_sequences + 1);
     defer gpa.free(too_many_stops);
     @memset(too_many_stops, "stop");
+    const stops_at_limit = try gpa.alloc([]const u8, chat.max_stop_sequences);
+    defer gpa.free(stops_at_limit);
+    @memset(stops_at_limit, "stop");
 
     const one_message = [_]chat.Message{user};
     const call_turn = [_]chat.Message{ user, .{ .assistant = .{ .tool_calls = &calls } }, .{ .tool = chat.toolResult("c1", "ok") } };
@@ -771,6 +756,17 @@ test "the documented chat parameter limits" {
         .{ .name = "thinking disabled allows required tool choice", .request = .{ .model = deepseek.Model.flash, .messages = &one_message, .thinking = .disabled, .tools = &tools, .tool_choice = .{ .mode = .required } } },
         .{ .name = "assistant tool call replayed with reasoning is allowed", .request = .{ .model = deepseek.Model.flash, .messages = &replayed, .tools = &tools } },
         .{ .name = "non-thinking requests need no reasoning", .request = .{ .model = deepseek.Model.flash, .messages = &unreasoned, .thinking = .disabled, .tools = &tools } },
+        // The accepting side of each limit the rows below reject. Without
+        // these, a comparison off by one at the boundary passes on the
+        // strength of the rejection alone.
+        .{ .name = "max_tokens at its floor", .request = .{ .model = deepseek.Model.flash, .messages = &one_message, .max_tokens = 1 } },
+        .{ .name = "max_tokens at its ceiling", .request = .{ .model = deepseek.Model.flash, .messages = &one_message, .max_tokens = chat.max_output_tokens } },
+        .{ .name = "temperature at its floor", .request = .{ .model = deepseek.Model.flash, .messages = &one_message, .temperature = 0.0 } },
+        .{ .name = "temperature at its ceiling", .request = .{ .model = deepseek.Model.flash, .messages = &one_message, .temperature = 2.0 } },
+        .{ .name = "top_p at its ceiling", .request = .{ .model = deepseek.Model.flash, .messages = &one_message, .top_p = 1.0 } },
+        .{ .name = "top_logprobs at its floor", .request = .{ .model = deepseek.Model.flash, .messages = &one_message, .logprobs = true, .top_logprobs = 0 } },
+        .{ .name = "top_logprobs at its ceiling", .request = .{ .model = deepseek.Model.flash, .messages = &one_message, .logprobs = true, .top_logprobs = chat.max_top_logprobs } },
+        .{ .name = "stop sequences at the limit", .request = .{ .model = deepseek.Model.flash, .messages = &one_message, .stop = .{ .sequences = stops_at_limit } } },
         .{ .name = "missing model", .request = .{ .model = "", .messages = &one_message }, .want = .model_required },
         .{ .name = "no messages", .request = .{ .model = deepseek.Model.flash, .messages = &.{} }, .want = .messages_required },
         .{ .name = "user message without content", .request = .{ .model = deepseek.Model.flash, .messages = &empty_user }, .want = .{ .message_content_required = 0 } },
@@ -983,6 +979,11 @@ test "the documented FIM parameter limits" {
     const cases = [_]Case{
         .{ .name = "minimal", .request = .{ .model = deepseek.Model.flash, .prompt = "def fib(a):" } },
         .{ .name = "echo alone", .request = .{ .model = deepseek.Model.flash, .prompt = "def fib(a):", .echo = true } },
+        // The accepting side of the FIM limits, as in the chat table above.
+        .{ .name = "logprobs at its floor", .request = .{ .model = deepseek.Model.flash, .prompt = "x", .logprobs = 0 } },
+        .{ .name = "logprobs at its ceiling", .request = .{ .model = deepseek.Model.flash, .prompt = "x", .logprobs = fim.max_logprobs } },
+        .{ .name = "max_tokens at its floor", .request = .{ .model = deepseek.Model.flash, .prompt = "x", .max_tokens = 1 } },
+        .{ .name = "max_tokens at its ceiling", .request = .{ .model = deepseek.Model.flash, .prompt = "x", .max_tokens = fim.max_output_tokens } },
         .{ .name = "missing model", .request = .{ .model = "", .prompt = "x" }, .want = .model_required },
         .{ .name = "missing prompt", .request = .{ .model = deepseek.Model.flash, .prompt = "" }, .want = .prompt_required },
         .{ .name = "echo with suffix", .request = .{ .model = deepseek.Model.flash, .prompt = "x", .echo = true, .suffix = "y" }, .want = .echo_with_suffix },
