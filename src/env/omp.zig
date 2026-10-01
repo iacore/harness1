@@ -6,10 +6,10 @@
 //!
 //!   * The store is omp's own SQLite database, `~/.omp/agent/agent.db`, whose
 //!     `auth_credentials` table holds one JSON object per credential. Reading
-//!     it is left to `credentials.py`, a Python helper installed beside the
-//!     harness, so that SQLite stays out of this build: the harness links no
-//!     SQL, and the machine's own Python reads the store with the SQLite it
-//!     already has.
+//!     it is left to `credentials.py`, a Python helper installed under the
+//!     harness's install root, so that SQLite stays out of this build: the
+//!     harness links no SQL, and the machine's own Python reads the store with
+//!     the SQLite it already has.
 //!   * The helper is handed a provider name and an absolute path, never a
 //!     statement, so nothing this file passes can be SQL, and the helper needs
 //!     no environment of its own to find the store.
