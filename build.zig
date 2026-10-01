@@ -46,10 +46,8 @@ pub fn build(b: *std.Build) void {
     // SQL, and of libc with it.
     //
     // It is not installed to `bin` because it is not a program — the harness
-    // runs it through `python3`. src/env/omp.zig looks for it at exactly this
-    // path, beside the executable's `bin`, so the two have to agree.
-    const credentials_source = b.root.joinString(b.allocator, "src/credentials.py") catch
-        @panic("OOM");
+    // runs it through `python3`. src/env/omp.zig looks for exactly this path
+    // under the install root, so the two have to agree.
     const credentials = b.addInstallFileWithDir(
         b.path("src/credentials.py"),
         .lib,
@@ -177,10 +175,16 @@ pub fn build(b: *std.Build) void {
     const playground_step = b.step("deepseek_playground", "Run the DeepSeek playground");
     const run_playground = b.addRunArtifact(playground);
     run_playground.addPassthruArgs();
-    // The playground runs out of the build cache rather than from an install
-    // prefix, so it cannot find the helper beside itself; the source copy is
-    // the same file the install puts under `lib`.
-    run_playground.setEnvironmentVariable("HARNESS1_CREDENTIALS", credentials_source);
+    // The playground runs out of the build cache rather than from the install
+    // tree, so it is told where that tree is instead of finding it beside
+    // itself. The value is relative and setCwd pins what it is relative to —
+    // the build root, where the default prefix is `zig-out`. Installing
+    // elsewhere with `-p` means naming that prefix here yourself; this step
+    // cannot see it, since Zig resolves the prefix when it installs rather
+    // than when it configures.
+    run_playground.setCwd(b.path("."));
+    run_playground.setEnvironmentVariable("HARNESS1_INSTALL_ROOT", "zig-out");
+    run_playground.step.dependOn(&credentials.step);
     playground_step.dependOn(&run_playground.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.

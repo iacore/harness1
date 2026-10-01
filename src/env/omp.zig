@@ -29,14 +29,16 @@ const Allocator = std.mem.Allocator;
 /// to the home directory.
 pub const credentials_path = ".omp/agent/agent.db";
 
-/// The helper, under the install prefix's `lib`. Not `bin`: a program belongs
+/// The helper, under the install root's `lib`. Not `bin`: a program belongs
 /// there, and this is not one, it is run through `python3`. Keep in step with
 /// build.zig, which installs it at exactly this path.
 const helper_path = "lib/harness1/credentials.py";
 
-/// Names the helper, for an executable that is not where the install put it —
-/// the playground runs out of the build cache, and build.zig tells it this.
-pub const helper_var = "HARNESS1_CREDENTIALS";
+/// Names the install root, for a program that is not where the install put it.
+/// The playground runs out of the build cache and is told `zig-out`; without
+/// it, the root is taken to be the directory the running executable's `bin` is
+/// inside.
+pub const install_root_var = "HARNESS1_INSTALL_ROOT";
 
 /// A provider this harness can authenticate with: the name omp's store lists
 /// it under, and the environment variable that takes precedence over the
@@ -126,16 +128,16 @@ fn storedApiKey(
     return try allocator.dupe(u8, key);
 }
 
-/// Where the helper is: `HARNESS1_CREDENTIALS` when the environment names one,
-/// otherwise `credentials.py` under the `lib` beside the `bin` the running
-/// executable is in.
+/// Where the helper is: `credentials.py` under the install root. The root is
+/// `HARNESS1_INSTALL_ROOT` when the environment names one, otherwise the
+/// directory the running executable's own `bin` sits in.
 fn helperPath(
     allocator: Allocator,
     io: Io,
     environ: *const std.process.Environ.Map,
 ) Error![]u8 {
-    if (environ.get(helper_var)) |path| {
-        if (path.len != 0) return try allocator.dupe(u8, path);
+    if (environ.get(install_root_var)) |root| {
+        if (root.len != 0) return try std.fs.path.join(allocator, &.{ root, helper_path });
     }
     const executable_dir = std.process.executableDirPathAlloc(io, allocator) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -143,8 +145,9 @@ fn helperPath(
         else => return error.HelperUnavailable,
     };
     defer allocator.free(executable_dir);
-    // `..` stays unresolved: the pair of directories is the install layout,
-    // and resolving it here would only restate what the `join` says.
+    // An executable's directory is the root's `bin`, so the root is its
+    // parent. Left unresolved: `..` and the `lib` below it are the install
+    // layout, and spelling that out again would only restate the `join`.
     return std.fs.path.join(allocator, &.{ executable_dir, "..", helper_path });
 }
 
