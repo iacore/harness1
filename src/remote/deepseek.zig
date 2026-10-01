@@ -13,9 +13,11 @@
 //!
 //! Deciding points:
 //!
-//!   * Errors are bare names. The API's error envelope comes back through the
-//!     optional `api_error` out-parameter of every call, which the caller owns
-//!     and must deinit.
+//!   * Errors are bare names, and the API's own failures are values rather
+//!     than errors: a call returns `Result(Success, Failure)` whose `.err`
+//!     explains it, with the API's error envelope in `Failure.api`. A Zig
+//!     error cannot carry that envelope, so its strings are the caller's to
+//!     free with `APIError.deinit`.
 //!   * Cancellation is the caller's `std.Io` concern: a request runs on the
 //!     `Io` the client was built with, and no per-call handle is threaded
 //!     through it.
@@ -304,10 +306,9 @@ pub const Client = struct {
 
         var transfer: [512]u8 = undefined;
         const reader = head.reader(&transfer);
-        const length = readUpTo(reader, body) catch |err| switch (err) {
-            error.ReadFailed => body.len,
-            else => return err,
-        };
+        // A body that broke partway may still carry the API's explanation, so
+        // whatever arrived is treated as the whole of it.
+        const length = readUpTo(reader, body);
         const text = body[0..length];
 
         var out: APIError = .{ .status_code = @backingInt(head.head.status) };
@@ -333,6 +334,9 @@ pub const Client = struct {
         const message = stringField(fields, "message") orelse return out;
         if (message.len == 0) return out;
 
+        // The strings are built one at a time, so a failure partway through
+        // would strand the ones already taken.
+        errdefer out.deinit(gpa);
         out.message = try gpa.dupe(u8, message);
         if (stringField(fields, "type")) |value| out.type = try gpa.dupe(u8, value);
         if (stringField(fields, "param")) |value| out.param = try gpa.dupe(u8, value);
@@ -357,16 +361,18 @@ fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     };
 }
 
-/// Reads at most `buffer.len` bytes, stopping at the end of the stream.
-fn readUpTo(reader: *Io.Reader, buffer: []u8) !usize {
+/// Reads at most `buffer.len` bytes and returns how many are in `buffer`.
+///
+/// A body that breaks partway is not an error here: what arrived is what the
+/// caller has, and a count taken from the buffer's length instead of from this
+/// would hand out uninitialized memory, since an allocation does not zero it.
+fn readUpTo(reader: *Io.Reader, buffer: []u8) usize {
     var writer = Io.Writer.fixed(buffer);
     var length: usize = 0;
     while (length < buffer.len) {
-        const n = reader.stream(&writer, .limited(buffer.len - length)) catch |err| switch (err) {
-            // The body ended, which is the normal way this stops.
-            error.EndOfStream => break,
-            else => |e| return e,
-        };
+        // The body ending is the normal way this stops, and a broken transport
+        // is the same answer from here: the bytes already read stand.
+        const n = reader.stream(&writer, .limited(buffer.len - length)) catch break;
         if (n == 0) break;
         length += n;
     }
@@ -412,10 +418,7 @@ pub const Response = struct {
         defer source.deinit();
         return std.json.parseFromTokenSource(T, self.allocator, &source, .{
             .ignore_unknown_fields = true,
-        }) catch |err| switch (err) {
-            error.ReadFailed => error.ReadFailed,
-            else => err,
-        };
+        });
     }
 };
 
@@ -1747,7 +1750,6 @@ pub const fim = struct {
             .fields = .{ .suffix = .{ .skip_if_empty = true } },
         };
 
-        /// Reports whether the request satisfies the constraints the API
         /// Reports whether the request satisfies the constraints the API
         /// documents for POST /completions, so that a request the API would
         /// reject is caught before it is sent. `send` and `sendStream` call
