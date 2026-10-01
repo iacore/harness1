@@ -62,9 +62,11 @@ pub fn main(init: std.process.Init) !void {
     const message = completion.value.message();
     try out.print("prompt: {s}\n", .{prompt});
     try out.print("model:  {s}\n", .{completion.value.model});
-    try out.print("reply:  {s}\n", .{message.content});
-    if (message.reasoning_content.len != 0) {
-        try out.print("reason: {s}\n", .{message.reasoning_content});
+    try out.print("reply:  {s}\n", .{message.content orelse ""});
+    if (message.reasoning_content) |reasoning| {
+        // Present but empty is a turn the model thought nothing on, which is
+        // not the same as one with a chain of thought to show.
+        if (reasoning.len != 0) try out.print("reason: {s}\n", .{reasoning});
     }
     if (completion.value.usage) |usage| {
         try out.print("tokens: {d} prompt + {d} completion = {d}\n", .{

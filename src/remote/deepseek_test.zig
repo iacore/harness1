@@ -14,6 +14,7 @@ const deepseek = @import("deepseek.zig");
 const Client = deepseek.Client;
 const chat = deepseek.chat;
 const fim = deepseek.fim;
+const json_encoder = @import("../json_encoder.zig");
 
 // What the test server saw of one request. Owned by the server's arena.
 const Recorded = struct {
@@ -594,7 +595,7 @@ test "the documented chat completion response" {
     try testing.expectEqual(1705651092, completion.created);
     try testing.expectEqualStrings("fp_7a09fdf9c2", completion.system_fingerprint);
     try testing.expectEqualStrings(chat.FinishReason.tool_calls, completion.choices[0].finish_reason.?);
-    try testing.expectEqualStrings("I should check the weather.", completion.choices[0].message.reasoning_content);
+    try testing.expectEqualStrings("I should check the weather.", completion.choices[0].message.reasoning_content.?);
     try testing.expectEqualStrings("{\"city\":\"Hangzhou\"}", completion.choices[0].message.tool_calls[0].function.arguments);
     try testing.expectEqual(84, completion.choices[0].logprobs.?.content[0].bytes.?[0]);
     try testing.expectEqual(-0.1, completion.choices[0].logprobs.?.content[0].logprob);
@@ -623,7 +624,7 @@ test "the documented chat completion response" {
 test "the documented chat stream" {
     const gpa = testing.allocator;
     const events = [_][]const u8{
-        \\{"id":"1f63","object":"chat.completion.chunk","created":1718345013,"model":"deepseek-flash","system_fingerprint":"fp_a49","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":null,"logprobs":null}]}
+        \\{"id":"1f63","object":"chat.completion.chunk","created":1718345013,"model":"deepseek-flash","system_fingerprint":"fp_a49","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":null},"finish_reason":null,"logprobs":null}]}
         ,
         \\{"id":"1f63","object":"chat.completion.chunk","created":1718345013,"model":"deepseek-flash","choices":[{"index":0,"delta":{"content":"The answer is ","reasoning_content":"2+2"},"finish_reason":null}]}
         ,
@@ -654,10 +655,14 @@ test "the documented chat stream" {
     const first = (try stream.recv(a)).?;
     try testing.expectEqualStrings(chat.Object.completion_chunk, first.object);
     try testing.expectEqualStrings(chat.Role.assistant, first.choices[0].delta.role);
+    // Text the API has none of arrives as null, on both texts at once: the
+    // chunk that opens a thinking-mode answer carries nothing but the role.
+    try testing.expectEqual(null, first.choices[0].delta.content);
+    try testing.expectEqual(null, first.choices[0].delta.reasoning_content);
 
     const second = (try stream.recv(a)).?;
-    try testing.expectEqualStrings("The answer is ", second.choices[0].delta.content);
-    try testing.expectEqualStrings("2+2", second.choices[0].delta.reasoning_content);
+    try testing.expectEqualStrings("The answer is ", second.choices[0].delta.content.?);
+    try testing.expectEqualStrings("2+2", second.choices[0].delta.reasoning_content.?);
 
     // A tool call arrives in fragments, the first carrying its id and name.
     const third = (try stream.recv(a)).?;
@@ -682,8 +687,8 @@ test "the documented chat stream" {
     var collected = try second_stream.collect(gpa);
     defer collected.deinit();
     try testing.expectEqualStrings(chat.Object.completion, collected.value.object);
-    try testing.expectEqualStrings("The answer is ", collected.value.choices[0].message.content);
-    try testing.expectEqualStrings("2+2", collected.value.choices[0].message.reasoning_content);
+    try testing.expectEqualStrings("The answer is ", collected.value.choices[0].message.content.?);
+    try testing.expectEqualStrings("2+2", collected.value.choices[0].message.reasoning_content.?);
     try testing.expectEqualStrings(
         "{\"city\":\"Hangzhou\"}",
         collected.value.choices[0].message.tool_calls[0].function.arguments,
@@ -697,6 +702,66 @@ test "the documented chat stream" {
     , server.recorded.items[0].body);
     server.finish();
     try server.expectNoFailures();
+}
+
+// The API's two texts are documented nullable, and it uses the null: in
+// thinking mode — the default — the chain of thought arrives with
+// `content: null` and the answer proper with `reasoning_content: null`. A
+// field that is not optional does not decode a `null` at all, default or no
+// default, so the whole chunk it is in fails rather than reading as empty.
+test "text the API sent as null decodes as nothing" {
+    const message = try std.json.parseFromSliceLeaky(
+        chat.GeneratedMessage,
+        testing.allocator,
+        \\{"role":"assistant","content":null,"reasoning_content":null}
+    , .{});
+    try testing.expectEqual(null, message.content);
+    try testing.expectEqual(null, message.reasoning_content);
+
+    const delta = try std.json.parseFromSliceLeaky(
+        chat.Delta,
+        testing.allocator,
+        \\{"content":null,"reasoning_content":"thinking"}
+    , .{});
+    try testing.expectEqual(null, delta.content);
+    try testing.expectEqualStrings("thinking", delta.reasoning_content.?);
+}
+
+// What the API requires back on a tool-calling turn is the chain of thought
+// field, present, and not a value in it: the model calls a tool without
+// thinking often enough that it answers with an empty one, and the API takes
+// `""` where it refuses the field's absence. So an empty one is written and an
+// absent one is left out — a client that dropped empty strings could not send
+// such a turn back at all, and one that wrote nulls would put a chain of
+// thought on every turn that never had one.
+test "an empty chain of thought is replayed and an absent one is left out" {
+    const gpa = testing.allocator;
+    const calls = [_]chat.ToolCall{.{
+        .id = "c1",
+        .type = chat.ToolType.function,
+        .function = .{ .name = "f", .arguments = "{}" },
+    }};
+
+    const thoughtless = [_]chat.Message{
+        .{ .user = .{ .content = chat.text("weather?") } },
+        .{ .assistant = .{ .tool_calls = &calls, .reasoning_content = "" } },
+        .{ .tool = chat.toolResult("c1", "ok") },
+    };
+    const replayed: chat.Request = .{ .model = deepseek.Model.flash, .messages = &thoughtless };
+    try testing.expectEqual(null, replayed.validate().failure());
+
+    const body = try json_encoder.stringify(gpa, replayed);
+    defer gpa.free(body);
+    try testing.expect(std.mem.indexOf(u8, body, "\"reasoning_content\":\"\"") != null);
+
+    const never = [_]chat.Message{
+        .{ .user = .{ .content = chat.text("hi") } },
+        .{ .assistant = .{ .content = chat.text("hello") } },
+    };
+    const plain: chat.Request = .{ .model = deepseek.Model.flash, .messages = &never };
+    const plain_body = try json_encoder.stringify(gpa, plain);
+    defer gpa.free(plain_body);
+    try testing.expect(std.mem.indexOf(u8, plain_body, "reasoning_content") == null);
 }
 
 // Every limit the reference page states for a chat parameter.
@@ -725,6 +790,7 @@ test "the documented chat parameter limits" {
     const one_message = [_]chat.Message{user};
     const call_turn = [_]chat.Message{ user, .{ .assistant = .{ .tool_calls = &calls } }, .{ .tool = chat.toolResult("c1", "ok") } };
     const replayed = [_]chat.Message{ user, .{ .assistant = .{ .tool_calls = &calls, .reasoning_content = "why" } }, .{ .tool = chat.toolResult("c1", "ok") } };
+    const replayed_empty = [_]chat.Message{ user, .{ .assistant = .{ .tool_calls = &calls, .reasoning_content = "" } }, .{ .tool = chat.toolResult("c1", "ok") } };
     const unreasoned = [_]chat.Message{ user, .{ .assistant = .{ .tool_calls = &calls } }, .{ .tool = chat.toolResult("c1", "ok") } };
     const prefix = [_]chat.Message{ user, .{ .assistant = .{ .content = chat.text("```python\n"), .prefix = true } } };
     const prefix_not_last = [_]chat.Message{ .{ .assistant = .{ .content = chat.text("Once"), .prefix = true } }, user };
@@ -755,6 +821,7 @@ test "the documented chat parameter limits" {
         .{ .name = "prefix on the last assistant message", .request = .{ .model = deepseek.Model.flash, .messages = &prefix } },
         .{ .name = "thinking disabled allows required tool choice", .request = .{ .model = deepseek.Model.flash, .messages = &one_message, .thinking = .disabled, .tools = &tools, .tool_choice = .{ .mode = .required } } },
         .{ .name = "assistant tool call replayed with reasoning is allowed", .request = .{ .model = deepseek.Model.flash, .messages = &replayed, .tools = &tools } },
+        .{ .name = "assistant tool call replayed with an empty chain of thought is allowed", .request = .{ .model = deepseek.Model.flash, .messages = &replayed_empty, .tools = &tools } },
         .{ .name = "non-thinking requests need no reasoning", .request = .{ .model = deepseek.Model.flash, .messages = &unreasoned, .thinking = .disabled, .tools = &tools } },
         // The accepting side of each limit the rows below reject. Without
         // these, a comparison off by one at the boundary passes on the
