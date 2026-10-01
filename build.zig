@@ -113,6 +113,22 @@ pub fn build(b: *std.Build) void {
     // command itself, like this: `zig build run -- arg1 arg2 etc`
     run_cmd.addPassthruArgs();
 
+    // The DeepSeek playground under src/research. It is a scratch program, not
+    // part of the library, so it is neither installed by the default step nor
+    // built with it: `zig build` stays off the network and builds only the
+    // harness. `zig build deepseek_playground` compiles and runs it.
+    const playground = b.addExecutable(.{
+        .name = "deepseek_playground",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/research/deepseek_playground.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness1", .module = mod },
+            },
+        }),
+    });
+
     // Creates an executable that will run `test` blocks from the provided module.
     // Here `mod` needs to define a target, which is why earlier we made sure to
     // set the releative field.
@@ -139,6 +155,13 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+
+    // Runs the playground against the live API. Separate from the default
+    // step, which must not need a key or a network.
+    const playground_step = b.step("deepseek_playground", "Run the DeepSeek playground");
+    const run_playground = b.addRunArtifact(playground);
+    run_playground.addPassthruArgs();
+    playground_step.dependOn(&run_playground.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //

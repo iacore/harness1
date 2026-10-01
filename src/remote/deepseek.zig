@@ -38,7 +38,7 @@ const Io = std.Io;
 const http = std.http;
 const Allocator = std.mem.Allocator;
 
-const wire = @import("../json_encoder.zig");
+const json_encoder = @import("../root.zig").json_encoder;
 
 /// The OpenAI-compatible API root.
 pub const default_base_url = "https://api.deepseek.com";
@@ -93,7 +93,7 @@ pub const Stop = struct {
 
 /// Writes one sequence as a string and several as an array, which is the shape
 /// the API accepts.
-fn encodeStop(e: *wire.Encoder, stop: Stop) wire.Error!void {
+fn encodeStop(e: *json_encoder.Encoder, stop: Stop) json_encoder.Error!void {
     if (stop.sequences.len == 1) return e.string(stop.sequences[0]);
     try e.beginArray();
     for (stop.sequences) |sequence| try e.string(sequence);
@@ -698,14 +698,14 @@ pub const chat = struct {
     /// Writes content the way the API expects it: one text part is a plain
     /// string, no parts at all is the empty string, and anything else is an
     /// array of parts.
-    fn encodeContent(e: *wire.Encoder, content: Content) wire.Error!void {
+    fn encodeContent(e: *json_encoder.Encoder, content: Content) json_encoder.Error!void {
         switch (content) {
             .text => |body| return e.string(body),
             .parts => |parts| {
                 if (parts.len == 1 and parts[0] == .text) return e.string(parts[0].text);
                 if (parts.len == 0) return e.string("");
                 try e.beginArray();
-                for (parts) |part| try wire.encode(e, part);
+                for (parts) |part| try json_encoder.encode(e, part);
                 return e.endArray();
             },
         }
@@ -814,7 +814,7 @@ pub const chat = struct {
         /// A JSON Schema object, already encoded as JSON text and written into
         /// the request verbatim. Leaving it null declares an empty parameter
         /// list.
-        parameters: ?wire.Raw = null,
+        parameters: ?json_encoder.Raw = null,
 
         /// Enables Beta strict mode: the arguments must validate against
         /// `parameters`, which must set additionalProperties to false and list
@@ -880,7 +880,7 @@ pub const chat = struct {
 
     /// Writes a bare mode as a string and a named function as the object the
     /// API expects.
-    fn encodeToolChoice(e: *wire.Encoder, choice: ToolChoice) wire.Error!void {
+    fn encodeToolChoice(e: *json_encoder.Encoder, choice: ToolChoice) json_encoder.Error!void {
         switch (choice) {
             .mode => |mode| return e.string(@tagName(mode)),
             .function => |name| {
@@ -1498,7 +1498,7 @@ pub const chat = struct {
 
     /// Encodes a request body with the client's allocator.
     fn encode(allocator: Allocator, request: *const Request) ![]u8 {
-        return wire.stringify(allocator, request.*);
+        return json_encoder.stringify(allocator, request.*);
     }
 
     /// A streamed Chat Completions response. `recv` returns the chunks in
@@ -1949,7 +1949,7 @@ pub const fim = struct {
 
     /// Encodes a request body with the client's allocator.
     fn encode(allocator: Allocator, request: *const Request) ![]u8 {
-        return wire.stringify(allocator, request.*);
+        return json_encoder.stringify(allocator, request.*);
     }
 
     /// A streamed FIM completion response. `recv` returns the chunks in order,
