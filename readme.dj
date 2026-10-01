@@ -2,3 +2,5 @@
 
 handmade: it's too complicated to express my thoughts to agents than to code it myself. agents are still used for routine tasks.
 
+notes: `src/research/deepseek-flash-non-thinking.dj` (what `deepseek-flash` does with thinking disabled, measured; re-run with `src/research/flash_probe.py`)
+

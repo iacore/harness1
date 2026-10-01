@@ -1,0 +1,165 @@
+# deepseek-flash without thinking
+
+What the model still does when `thinking` is disabled, measured against the live
+API on 2026-10-01. Model id `deepseek-flash`, i.e. DeepSeek-V4.1-Flash, served by
+DeepSeek's own endpoint. Readings come from `src/research/flash_probe.py`; every
+number below was produced by a call made while writing this, not quoted from a
+benchmark.
+
+The short version: disabling thinking removes the chain of thought and nothing
+else. Tools, images, `stop`, JSON mode and FIM all still run. What it costs is
+instruction discipline — the answers stay right, the surface form drifts.
+
+## The switch
+
+Thinking is on by default at effort `high`. The toggle sits at the top level of
+the request body next to `model`, not inside `messages`.
+
+```json
+{"model": "deepseek-flash", "messages": [...], "thinking": {"type": "disabled"}}
+```
+
+`reasoning_effort` (`low` | `high` | `max`) is the effort dial and is meaningful
+only while thinking is on. In the Anthropic-shaped API the same choice is
+`{"reasoning": {"effort": "none"}}` on the `/anthropic` base URL; `none` is the
+off switch there. In this repo `deepseek.chat.Request.thinking` is the field;
+`chat.Thinking.disabled` is the value the playground sends.
+
+With thinking off the reply carries no `reasoning_content` key at all — not an
+empty string — and `usage.completion_tokens_details.reasoning_tokens` is null.
+`top_p` is documented as pinned to 1.0 in this mode, so a `top_p` value is
+accepted and ignored; `temperature`, `presence_penalty` and `frequency_penalty`
+are documented as ignored in thinking mode and therefore expected to apply here.
+That expectation is the guide's, not a measurement: nothing in this note tests
+the effect of sampling parameters.
+
+## Still works with thinking off
+
+One call per cell, `--mode off`:
+
+| Case | Request | Observed |
+| --- | --- | --- |
+| Arithmetic | `17*19`, number only | `323` |
+| Multi-step | bat and ball, in cents | `5` (correct trap answer) |
+| Exact output | reply with exactly `OK` | `OK` |
+| JSON object | `response_format: json_object` | `{"city": "Lisbon", "population": 545000}` |
+| Tool call, forced | `tool_choice: "required"` | one `get_weather` call, `finish_reason: tool_calls` |
+| Tool call, auto | tools offered, greeting asked | text answer, no call |
+| Stop sequences | `stop: ["3"]`, count upward | `1\n2\n`, `finish_reason: stop` |
+| Vision | 64×64 solid-red PNG as data URI | `Red` |
+| FIM | `/beta/completions`, prefix + suffix | valid function body |
+
+The forced-tool row is the one that only exists in this mode. Thinking mode
+answers the same request with 400 `Thinking mode does not support this
+tool_choice`. That is why `thinking: disabled` is the setting for any agent loop
+that dispatches a specific tool rather than hoping the model picks one.
+
+The FIM row is not mode-gated in practice — see *Where the deployment disagrees
+with the published docs*.
+
+## What the chain of thought costs
+
+`--suite` runs eight checkable tasks at three settings, one sample each. `off`
+means `{"type": "disabled"}`; `high` and `max` are thinking with that effort.
+
+| Task | off | high | max |
+| --- | --- | --- | --- |
+| 9.11 vs 9.8 | ok, 3 tok | ok, 68 tok | ok, 49 tok |
+| r's in strawberry | miss (prose), 54 tok | ok, 141 tok | ok, 53 tok |
+| year arithmetic | ok, 2 tok | ok, 90 tok | ok, 144 tok |
+| digit reverse | miss (`8147 - 7418 = 729`), 9 tok | ok, 58 tok | ok, 61 tok |
+| weekday of 2026-10-01 | ok, 1 tok | ok, 310 tok | ok, 355 tok |
+| email extraction | ok, 12 tok | ok, 286 tok | ok, 118 tok |
+| one-line bug fix, executed | ok, 5 tok | ok, 82 tok | ok, 142 tok |
+| 2^100 mod 1000 | ok, 1 tok | ok, 188 tok | ok, 217 tok |
+
+Totals: 6/8 strict hits with thinking off, 8/8 with thinking on. Both off-mode
+misses are format, not substance. The digit-reverse reply states the right number
+inside a written sentence; the strawberry reply explains the count instead of
+returning it, and re-running that prompt with thinking off three times returned a
+bare `3` every time. This is variance at n=1, and the honest reading is "the off
+mode is less reliable at obeying a shape constraint", not "the off mode cannot
+count".
+
+Nearly all of the difference is reasoning tokens. `weekday` costs 1 output token
+without thinking and 310 with it, 308 of those being reasoning. Nothing but the
+effort setting differs between the columns.
+
+The same effect shows up as latency at the top end: a one-line JSON request for
+Lisbon's population took 1,268 reasoning tokens and 7.9 s at `high`, against 14
+output tokens and 0.8 s with thinking off.
+
+## Where the deployment disagrees with the published docs
+
+Two documented rules do not hold on the endpoint this repo talks to. Each was
+checked with a request built by hand rather than through the probe script; the
+first was sent twice, the second in two shapes.
+
+1. The thinking-mode guide says a request that disables thinking while setting
+   `reasoning_effort` is refused. It is not:
+
+   ```json
+   {"model": "deepseek-flash", "messages": [{"role": "user", "content": "hi"}],
+    "thinking": {"type": "disabled"}, "reasoning_effort": "high"}
+   ```
+
+   answers 200 with no reasoning content. The published 400 is therefore not
+   something `Request` needs to prevent, and a caller passing both is not
+   currently punished for it. Do not rely on the reverse either: the response is
+   ordinary non-thinking output, so the effort value is simply dropped, and
+   whether that stays true is DeepSeek's to change.
+
+2. The pricing table marks FIM completion "Non-thinking mode only". FIM returns
+   content with `thinking: {"type": "enabled"}` and with the `thinking` field
+   omitted entirely (the default is thinking). Nothing in the reply distinguishes
+   the two.
+
+   The library should keep sending `thinking: disabled` on the FIM path anyway:
+   the documented restriction may be enforced later, or on another provider, and
+   nothing is lost by complying.
+
+## Tool replay
+
+When a request carries `tools`, thinking mode requires each previous assistant
+turn's `reasoning_content` to come back, and `AssistantMessage` in
+`src/remote/deepseek.zig` writes it whenever it is not null so that an empty
+chain of thought is still transmitted. That rule is about thinking mode.
+
+With thinking off, replaying an assistant tool call with the field absent
+entirely is accepted, and so is replaying it as `""`. Both were confirmed
+against the live API in a two-turn `get_weather` exchange. The library's current
+behaviour — write it when non-null — is therefore correct in both modes and
+needs no branch.
+
+## Re-running
+
+```sh
+python3 src/research/flash_probe.py --mode off
+python3 src/research/flash_probe.py --mode high
+python3 src/research/flash_probe.py --suite
+```
+
+The key is read the way the library reads it: `DEEPSEEK_API_KEY` first, then
+omp's store through the installed `credentials.py` helper. `--suite` is eight
+tasks at three settings; `--mode` is the full case list at one setting. The
+script asserts nothing and keeps no fixtures.
+
+## Sources
+
+Published material, read on 2026-10-01. Where a claim above rests on one of
+these rather than on a call, the text says so.
+
+https://api-docs.deepseek.com/guides/thinking_mode/
+https://api-docs.deepseek.com/quick_start/pricing/
+https://api-docs.deepseek.com/updates/
+https://api-docs.deepseek.com/guides/fim_completion/
+https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash
+
+Two community sources worth reading alongside this note. Artificial Analysis
+measures the model's output volume on its own suite and flags it as verbose with
+thinking on. The OpenCode configuration splits the Flash tier by mode instead of
+by model id, sending its cheapest agents — exploration, lookup, UI work — to
+Flash with thinking off and `temperature: 0`.
+
+https://artificialanalysis.ai/models/deepseek-v4-1-flash
+https://github.com/znlgis/my-opencode-deepseek-config
