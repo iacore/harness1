@@ -1399,19 +1399,30 @@ pub const chat = struct {
         created: i64 = 0,
         model: []const u8 = "",
         system_fingerprint: []const u8 = "",
+
+        /// One entry, always.
+        ///
+        /// It is a list because the OpenAI API this one is compatible with
+        /// takes an `n` and answers with one completion per `n`. This API does
+        /// not: there is no `n` in the request, and one sent anyway is refused
+        /// with "Invalid n value (currently only n = 1 is supported)". So the
+        /// list is the inherited shape, and one choice at index 0 is the whole
+        /// of the content — which is what `message` below returns.
         choices: []const Choice = &.{},
         usage: ?Usage = null,
 
-        /// The message of the first choice, or a zero message when the
-        /// response carries no choice.
+        /// The message of the one choice. A response carrying none is not one
+        /// the API sends; it reads as a zero message rather than a panic.
         pub fn message(self: *const Completion) GeneratedMessage {
             if (self.choices.len == 0) return .{};
             return self.choices[0].message;
         }
     };
 
-    /// One completed alternative.
+    /// One completed alternative. There is only ever the one, and its index is
+    /// always 0; see `Completion.choices`.
     pub const Choice = struct {
+        /// Which alternative this is. Always 0.
         index: i64 = 0,
         finish_reason: ?[]const u8 = null,
         message: GeneratedMessage = .{},
@@ -1480,12 +1491,15 @@ pub const chat = struct {
         created: i64 = 0,
         model: []const u8 = "",
         system_fingerprint: []const u8 = "",
+        /// One entry, always, as on `Completion`: every chunk's increment is
+        /// for choice 0.
         choices: []const ChunkChoice = &.{},
         usage: ?Usage = null,
     };
 
     /// The increment of one choice within a chunk.
     pub const ChunkChoice = struct {
+        /// Which alternative the increment belongs to. Always 0.
         index: i64 = 0,
         delta: Delta = .{},
         /// Null until the model stops.
