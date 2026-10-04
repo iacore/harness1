@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
     const lithos_models_exe = b.addExecutable(.{
         .name = "lithos_models_gen",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("research/lithos_models_gen.zig"),
+            .root_source_file = b.path("research/lithos/lithos_models_gen.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -93,7 +93,7 @@ pub fn build(b: *std.Build) void {
     const lithos_probe_exe = b.addExecutable(.{
         .name = "lithos_probe",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("research/lithos_probe.zig"),
+            .root_source_file = b.path("research/lithos/lithos_probe.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -106,7 +106,7 @@ pub fn build(b: *std.Build) void {
     const lithos_strict_exe = b.addExecutable(.{
         .name = "lithos_strict_probe",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("research/lithos_strict_probe.zig"),
+            .root_source_file = b.path("research/lithos/lithos_strict_probe.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -119,7 +119,7 @@ pub fn build(b: *std.Build) void {
     const lithos_roles_exe = b.addExecutable(.{
         .name = "lithos_roles_probe",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("research/lithos_roles_probe.zig"),
+            .root_source_file = b.path("research/lithos/lithos_roles_probe.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -132,7 +132,7 @@ pub fn build(b: *std.Build) void {
     const lithos_sysdev_exe = b.addExecutable(.{
         .name = "lithos_sysdev_probe",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("research/lithos_sysdev_probe.zig"),
+            .root_source_file = b.path("research/lithos/lithos_sysdev_probe.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{

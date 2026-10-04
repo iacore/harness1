@@ -32,10 +32,11 @@ claim says whether it was observed or inferred.
 | `src/remote/lithos_models.zig` | Generated model roster; `zig build --build-file ./build.research.zig lithos_models` rewrites it from `GET /v1/models`. |
 | `src/remote/lithos_models.md` | Per-model constraints (thinking, sampling) and the tool/`strict` findings. Source of truth for those. |
 | `src/remote/keys.zig` | `Provider.lithosai` — where the key is read. |
-| `research/lithos_probe.zig` | `zig build --build-file ./build.research.zig lithos_probe` — probes per-model `reasoning_effort` and `top_p`. |
-| `research/lithos_strict_probe.zig` | `zig build --build-file ./build.research.zig lithos_strict` — probes whether `strict` is enforced. |
-| `research/lithos_roles_probe.zig` | `zig build --build-file ./build.research.zig lithos_roles` — probes the message and role shapes the endpoint accepts, raw HTTP; the seventh role it found is written up in `src/remote/lithos_models.md`. |
-| `research/lithos_sysdev_probe.zig` | `zig build --build-file ./build.research.zig lithos_sysdev` — probes `system` against `developer`, first against later, by codeword. |
+| `research/lithos/lithos_probe.zig` | `zig build --build-file ./build.research.zig lithos_probe` — probes per-model `reasoning_effort` and `top_p`. |
+| `research/lithos/lithos_strict_probe.zig` | `zig build --build-file ./build.research.zig lithos_strict` — probes whether `strict` is enforced. |
+| `research/lithos/lithos_roles_probe.zig` | `zig build --build-file ./build.research.zig lithos_roles` — probes the message and role shapes the endpoint accepts, raw HTTP; the seventh role it found is written up in `src/remote/lithos_models.md`. |
+| `research/lithos/lithos_sysdev_probe.zig` | `zig build --build-file ./build.research.zig lithos_sysdev` — probes `system` against `developer`, first against later, by codeword. |
+| `research/lithos/latency.dj` | Time-to-first-token against the official DeepSeek API on identical prompts: cache behaviour, transport, and the scale curve. |
 | `src/remote/omp-keys.py` | Reads the key from omp's `agent.db`; shared with every provider, not Lithos-specific. |
 
 Client-side shape worth remembering: `chat.Function.strict` is a plain `?bool`

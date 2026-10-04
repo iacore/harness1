@@ -146,7 +146,7 @@ Cost per million tokens (input / cache-read / output):
 ## Message roles beyond the six in the reference (**live**)
 
 `zig build --build-file ./build.research.zig lithos_roles`
-(`research/lithos_roles_probe.zig`) speaks raw HTTP, because the client's
+(`research/lithos/lithos_roles_probe.zig`) speaks raw HTTP, because the client's
 `chat.Message` is a closed six-role union and cannot express a seventh.
 Measured 2026-10-04 against `deepseek-ai/DeepSeek-V4.1-Flash`, with Kimi-K3 and
 GLM-5.3 where noted.
@@ -205,7 +205,7 @@ name — and `function` is left out because no model tested serves it.
 ## `system` versus `developer` (**live**)
 
 `zig build --build-file ./build.research.zig lithos_sysdev`
-(`research/lithos_sysdev_probe.zig`); 3 trials per case on
+(`research/lithos/lithos_sysdev_probe.zig`); 3 trials per case on
 `deepseek-ai/DeepSeek-V4.1-Flash`, 2026-10-04. The discriminator is a codeword:
 one turn names it (`ALPHA` or `BETA`), a later user turn asks for it, and the
 answer says which turn the model read.
@@ -233,23 +233,23 @@ answer says which turn the model read.
 `zig build --build-file ./build.research.zig lithos_probe` sends each roster model two requests — `reasoning_effort:
 "none"` and `top_p: 0.5` — and prints `reasoning_tokens`, whether
 `reasoning_content` was non-empty, the answer length and the finish reason. It is
-a scratch program (`research/lithos_probe.zig`), neither installed nor built
+a scratch program (`research/lithos/lithos_probe.zig`), neither installed nor built
 by the default step.
 
 `zig build --build-file ./build.research.zig lithos_strict` asks the endpoint about the `strict` flag
-(`research/lithos_strict_probe.zig`): it sends a forced tool call whose
+(`research/lithos/lithos_strict_probe.zig`): it sends a forced tool call whose
 schema is varied against a prompt that contradicts it, and prints the returned
 arguments.
 
 `zig build --build-file ./build.research.zig lithos_roles` asks the message-shape
-questions (`research/lithos_roles_probe.zig`): it POSTs hand-written bodies with
+questions (`research/lithos/lithos_roles_probe.zig`): it POSTs hand-written bodies with
 roles, content shapes, and top-level keys the typed client cannot express, and
 checks each against the status recorded beside it in `cases` — the section above
 as an executable list. A body that drifts from the record prints `CHANGED`; the
 run ends with a count. Re-run it after touching the role set.
 
 `zig build --build-file ./build.research.zig lithos_sysdev` asks the instruction
-question (`research/lithos_sysdev_probe.zig`): it runs the codeword matrix —
+question (`research/lithos/lithos_sysdev_probe.zig`): it runs the codeword matrix —
 `system` against `developer`, first against later — a fixed number of trials
 each and prints every answer, since a single answer cannot separate a rule from
 a sample.

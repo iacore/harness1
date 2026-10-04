@@ -1,0 +1,93 @@
+# LithosAI vs the official DeepSeek API: latency
+
+Same model, same prompts, same machine, measured 2026-10-05. Model
+`deepseek-ai/DeepSeek-V4.1-Flash` (`https://api.lithosai.cloud/v1`) against
+`deepseek-flash` (`https://api.deepseek.com`), which is the same weights on
+DeepSeek's own endpoint.
+
+## Method
+
+`POST /chat/completions`, `stream: true`, `stream_options.include_usage`,
+`max_tokens: 4`, thinking off — `{"thinking":{"type":"disabled"}}` on the
+official API, `reasoning_effort: "none"` on LithosAI. Reported number is **time
+to the first content token** in the SSE stream.
+
+The filler is random per run (`os.urandom`), byte-identical to both endpoints,
+so neither can have it cached except through the run's own prime call. `cold` is
+the run's first call, `warm` a repeat of the same bytes. Only first-token
+readings appear below; the two endpoints do not flush HTTP headers the same way
+(see *Header flush*), so header timing is not comparable.
+
+## Time to first token
+
+| prompt tokens | official cold | official warm | LithosAI cold | LithosAI warm |
+| --- | --- | --- | --- | --- |
+| 77,258 | 1.53 s | 0.66 / 0.76 / 0.82 / 0.89 s (n=4) | 5.60 s | 5.44 / 3.29 / 2.36 / 5.97 s (n=4) |
+| 77,151 | 1.48 s | 0.67 s | 4.87 s | 9.47 s |
+| 312,181 | 4.81 s | 1.26 s | 13.51 s | 18.79 s |
+
+Warm, the official API is **7–15× faster**; cold, **2–3× faster**. LithosAI's
+warm spread at one size (2.36–5.97 s) is wider than the official/lithos gap
+below 100 K tokens, so quote the range, not a point value.
+
+## Prompt cache
+
+The official API reports `prompt_cache_hit_tokens`, and on a repeated prefix it
+is near-total — 77,056 of 77,258, and 311,936 of 312,181 (99.7–99.9 %) — which is
+what holds warm TTFB near 1 s at both sizes.
+
+LithosAI reports `prompt_tokens_details.cached_tokens`. On the unique-filler
+runs above it reported **null** even on the fourth repeat of identical bytes.
+On a previously-sent prompt (56,011 tokens) it did report 55,808 cached, but TTFB
+stayed 3.0–5.3 s. So a reported hit on LithosAI did not, in those readings, buy
+the near-zero prefill the official API's hit buys.
+
+## Transport
+
+| host | TLS handshake | A records |
+| --- | --- | --- |
+| `api.lithosai.cloud` | 0.54–0.90 s | 3.220.29.237, 98.90.223.11, 32.196.193.64 (US) |
+| `api.deepseek.com` | 0.16 s | 14.116.174.67, 14.29.51.120 (CN) |
+| `api.kimi.com` | 0.12 s | |
+
+Both hosts are reached over the same network path from this machine, so the
+handshake times compare like for like. LithosAI's edge is ~220 ms further per
+round trip than DeepSeek's — distance to its US addresses, not anything in the
+request.
+
+## Header flush
+
+LithosAI sends HTTP response headers only when the first token is ready — over
+the runs above, header and first-token times differ by 0.001 s. The official API
+flushes headers first: at 312,181 tokens, headers at 0.761 s, first token at
+4.805 s. Any comparison built on header timing alone therefore understates the
+official API's cold cost by roughly 4 s at that size.
+
+## Scale beyond the comparison
+
+LithosAI, identical prompt repeated (prime, then measured), first token:
+
+| prompt tokens | TTFB |
+| --- | --- |
+| 11 | 1.07 s |
+| 16,011 | 3.07 s |
+| 64,011 | 3.58 s |
+| 288,011 | 14.30 s |
+| 950,102 | 11.46 s (reported 950,016 cached); cold 75.34 s |
+| 1,024,011 | 63.67 s |
+
+Roughly linear in the *unprocessed* token count at ~12–13 K tokens/s, with a
+1 s floor. The 950 K row is the exception that proves it: warm with a reported
+full hit, it still took 11.46 s.
+
+## What this means for a turn
+
+An agent loop re-sends the whole conversation every turn and appends a small
+tail. On the official API that prefix is cached and the turn costs ~1 s before
+output; on LithosAI the same shape costs seconds to tens of seconds, growing
+with the conversation. Nothing client-side changes this — the prefill is the
+endpoint's.
+
+Generation, once it starts, is not the problem on either: LithosAI streams at
+~410 tokens/s with reasoning off and ~325 tokens/s at `reasoning_effort: low`
+(a trivial prompt spent 401 reasoning tokens before any content).

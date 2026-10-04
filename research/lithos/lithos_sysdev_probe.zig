@@ -37,6 +37,10 @@ const Case = struct {
 fn system(content: []const u8) chat.Message {
     return .{ .system = .{ .content = chat.text(content) } };
 }
+// The `developer` role is removed from `chat.Message` (src/remote/lithos.zig):
+// the union is system, user, assistant, tool, latest_reminder. Every case below
+// that builds one no longer compiles, so this file is kept as the record of
+// what was probed, not as a program.
 fn developer(content: []const u8) chat.Message {
     return .{ .developer = .{ .content = chat.text(content) } };
 }
