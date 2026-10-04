@@ -71,9 +71,6 @@ pub const Error = Allocator.Error || error{
     HelperFailed,
 };
 
-/// The key `provider` is authenticated with: its environment variable when
-/// that is set and non-empty, otherwise the credential omp stores for it.
-/// Null when neither has one.
 pub fn apiKey(
     allocator: Allocator,
     io: Io,
@@ -86,8 +83,7 @@ pub fn apiKey(
     return storedApiKey(allocator, io, environ, provider.store_name);
 }
 
-/// The key out of the credential omp stores for `store_name`, or null when
-/// there is no home directory, no store, or no enabled credential for it.
+/// The credential omp stores for `store_name`, or null when none is enabled.
 fn storedApiKey(
     allocator: Allocator,
     io: Io,
@@ -131,9 +127,6 @@ fn storedApiKey(
     return try allocator.dupe(u8, key);
 }
 
-/// Where the helper is: `credentials.py` under the install root. The root is
-/// `HARNESS1_INSTALL_ROOT` when the environment names one, otherwise the
-/// directory the running executable's own `bin` sits in.
 fn helperPath(
     allocator: Allocator,
     io: Io,

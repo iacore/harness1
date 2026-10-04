@@ -40,15 +40,14 @@ const chat = deepseek.chat;
 /// The name the forced tool is declared and chosen under.
 const tool_name = "verdict";
 
-/// What the judge is handed. `rubric` says what a passing answer must do, and
-/// is the only thing the verdict is measured against.
+/// `rubric` says what a passing answer must do, and is the only thing the
+/// verdict is measured against.
 pub const Request = struct {
     question: []const u8,
     answer: []const u8,
     rubric: []const u8,
 };
 
-/// The one shape the judge is allowed to return.
 const Verdict = struct {
     pass: bool,
     why: []const u8,

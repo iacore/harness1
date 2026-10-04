@@ -169,15 +169,11 @@ class Message(dict[str, Any]):
 
 
 class SystemMessage(Message):
-    """The instruction that steers the model."""
-
     def __init__(self, content: str | list[dict[str, Any]]) -> None:
         super().__init__(role="system", content=content)
 
 
 class UserMessage(Message):
-    """Input from the caller: text, or a list of content parts."""
-
     def __init__(self, content: str | list[dict[str, Any]]) -> None:
         super().__init__(role="user", content=content)
 
@@ -209,8 +205,6 @@ class AssistantMessage(Message):
 
 
 class ToolMessage(Message):
-    """The answer to one call, which the turn after it runs with."""
-
     def __init__(self, content: str, tool_call_id: str = "") -> None:
         super().__init__(role="tool", content=content, tool_call_id=tool_call_id)
 
@@ -234,8 +228,6 @@ def _api_message(payload: dict[str, Any]) -> Message:
 
 
 def as_message(value: Message | str | dict[str, Any]) -> Message:
-    """Whatever the caller had, as a `Message`: a Message as it stands, a
-    string as the user turn it reads as, a dict as the message it describes."""
     if isinstance(value, Message):
         return value
     if isinstance(value, str):
@@ -331,7 +323,6 @@ class Tool:
         self.strict = strict
 
     def call(self, arguments: str | None) -> Any:
-        """Runs the tool on the JSON text the model sent."""
         kwargs = json.loads(arguments) if arguments and arguments.strip() else {}
         return self.fn(**kwargs)
 
@@ -518,7 +509,6 @@ def chunk_text(chunk: dict[str, Any]) -> str:
 
 
 def chunk_reasoning(chunk: dict[str, Any]) -> str:
-    """The chain of thought one streamed chunk adds."""
     for choice in chunk.get("choices") or []:
         delta = choice.get("delta") or {}
         thought = delta.get("reasoning_content")
@@ -789,14 +779,11 @@ class Deepseek:
     # -- the conversation ---------------------------------------------------
 
     def append(self, message: Message | str | dict[str, Any]) -> Message:
-        """Adds one turn — a `Message`, a string (a user turn), or the API's
-        own message object — and returns it."""
         message = as_message(message)
         self.messages.append(message)
         return message
 
     def extend(self, messages: Iterable[Message | str | dict[str, Any]]) -> list[Message]:
-        """Adds several turns, and returns them."""
         return [self.append(message) for message in messages]
 
     def clone(self, **settings: Any) -> Deepseek:

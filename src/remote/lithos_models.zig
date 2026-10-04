@@ -41,7 +41,6 @@ pub const roster: []const Entry = &.{
     .{ .id = "moonshotai/Kimi-K3-ultra-chat", .created = 1785110400, .owned_by = "Moonshot AI" },
 };
 
-/// The roster row with this id, or null when the roster has none.
 pub fn find(id: []const u8) ?Entry {
     for (roster) |entry| {
         if (std.mem.eql(u8, entry.id, id)) return entry;

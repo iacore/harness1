@@ -14,7 +14,6 @@ const chat = lithos.chat;
 const models = lithos.models;
 const json_encoder = @import("../json_encoder.zig");
 
-/// Encodes a value and returns the JSON, owned by the testing allocator.
 fn encoded(value: anytype) ![]u8 {
     return json_encoder.stringify(testing.allocator, value);
 }

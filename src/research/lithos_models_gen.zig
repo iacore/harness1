@@ -16,7 +16,7 @@ const harness1 = @import("harness1");
 const lithos = harness1.lithos;
 const keys = harness1.keys;
 
-/// Where the generated file goes, relative to the build root.
+/// Relative to the build root.
 const output_path = "src/remote/lithos_models.zig";
 
 pub fn main(init: std.process.Init) !void {
@@ -62,8 +62,8 @@ pub fn main(init: std.process.Init) !void {
     try out.flush();
 }
 
-/// Renders the generated module for `roster`. The shape is fixed, so
-/// regenerating an unchanged roster produces identical bytes.
+/// The shape is fixed, so regenerating an unchanged roster produces identical
+/// bytes.
 fn render(allocator: std.mem.Allocator, roster: []const lithos.models.Model) ![]u8 {
     var allocating = std.Io.Writer.Allocating.init(allocator);
     defer allocating.deinit();
@@ -180,8 +180,6 @@ fn writeLiteral(writer: *std.Io.Writer, text: []const u8) std.Io.Writer.Error!vo
     try writer.writeByte('"');
 }
 
-/// Turns an id into a Zig identifier: lowercase, with every run of characters
-/// outside `[a-z0-9]` folded to one `_`.
 fn constantName(allocator: std.mem.Allocator, id: []const u8) ![]u8 {
     var buffer: std.ArrayList(u8) = .empty;
     errdefer buffer.deinit(allocator);

@@ -231,7 +231,6 @@ fn Payload(comptime R: type, comptime which: []const u8) type {
     @compileError(@typeName(R) ++ " is not a Result");
 }
 
-// Unwraps a call, failing the test with the reason when it failed.
 fn unwrap(result: anytype) !Payload(@TypeOf(result), "ok") {
     return switch (result) {
         .ok => |value| value,
@@ -242,7 +241,6 @@ fn unwrap(result: anytype) !Payload(@TypeOf(result), "ok") {
     };
 }
 
-// Asserts that a call failed the given way and returns the failure.
 fn expectFailure(result: anytype, comptime tag: std.meta.Tag(Payload(@TypeOf(result), "err"))) !Payload(@TypeOf(result), "err") {
     switch (result) {
         .ok => {
@@ -1269,8 +1267,6 @@ fn startStreamServer(gpa: Allocator, events: []const []const u8, replies: []Repl
     return server;
 }
 
-// Checks a validation result against the failure it must report, or against
-// success when the case expects none.
 fn expectValidation(name: []const u8, result: anytype, want: ?Payload(@TypeOf(result), "err")) !void {
     switch (result) {
         .ok => if (want) |expected| {

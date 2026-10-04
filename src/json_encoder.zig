@@ -54,19 +54,15 @@ const std = @import("std");
 const Io = std.Io;
 
 pub const Error = Io.Writer.Error || error{
-    /// The value nests deeper than this encoder writes.
     DepthTooDeep,
     /// A float JSON cannot carry. `null` is not the same value, so this is
     /// reported rather than written.
     NotFinite,
 };
 
-/// The deepest object or array this encoder writes before giving up. The API's
-/// payloads are nowhere near it; it bounds the comma bookkeeping.
+/// Bounds the comma bookkeeping; the API's payloads are nowhere near it.
 pub const max_depth = 64;
 
-/// Writes JSON: the writer, and the per-level state that decides where the
-/// separators go.
 pub const Encoder = struct {
     out: *Io.Writer,
     /// Per level: whether a separator is needed before the next element, and
@@ -92,7 +88,6 @@ pub const Encoder = struct {
         self.comma[level] = true;
     }
 
-    /// Writes the separator an element at the current level needs.
     fn element(self: *Encoder) Error!void {
         if (self.depth == 0) return;
         const level = self.depth - 1;
@@ -183,7 +178,6 @@ pub const Raw = struct {
     pub const json = .{ .raw = true };
 };
 
-/// Encodes `value` with a fresh encoder.
 pub fn encode(e: *Encoder, value: anytype) Error!void {
     const T = @TypeOf(value);
 
@@ -386,7 +380,6 @@ fn isRaw(comptime T: type) bool {
     return @field(config, "raw");
 }
 
-/// Whether a rule drops this field, given its value.
 fn skipField(comptime T: type, comptime rule: Rule, value: T) bool {
     if (comptime rule.skip_if_null and @typeInfo(T) == .optional) {
         if (value == null) return true;
@@ -400,7 +393,6 @@ fn skipField(comptime T: type, comptime rule: Rule, value: T) bool {
     return false;
 }
 
-/// Whether "empty" means anything for this type.
 fn canBeEmpty(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .optional => |info| canBeEmpty(info.child),
@@ -422,7 +414,6 @@ fn isEmpty(comptime T: type, value: T) bool {
     };
 }
 
-/// One field's rules, all optional.
 pub const Rule = struct {
     key: ?[]const u8 = null,
     skip: bool = false,
@@ -431,7 +422,6 @@ pub const Rule = struct {
     skip_if_false: bool = false,
 };
 
-/// One union variant's rules, all optional.
 pub const VariantRule = struct {
     key: ?[]const u8 = null,
     /// Write the payload's own fields inside the tag's object instead of
@@ -547,9 +537,6 @@ const schema_text =
 ;
 
 test "the vocabulary encodes the documented shapes" {
-    // Fields in declaration order, unset ones left out, a renamed key, an
-    // empty string left out, a tag over a payload, a flattened payload, a bare
-    // one, and a raw string written as JSON.
     var example: Example = .{
         .name = "n",
         .renamed = 3,

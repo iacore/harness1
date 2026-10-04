@@ -87,7 +87,6 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-/// Sends one probe and prints a one-line outcome.
 fn ask(
     client: *lithos.Client,
     out: *Io.Writer,

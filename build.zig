@@ -144,8 +144,8 @@ pub fn build(b: *std.Build) void {
     run_lithos_models.step.dependOn(&credentials.step);
     lithos_models_step.dependOn(&run_lithos_models.step);
 
-    // The per-model constraint probe. Scratch too: it prints what each roster
-    // model does with the off switch and a mid-band top_p.
+    // Scratch too: it prints what each roster model does with the off switch
+    // and a mid-band top_p.
     const lithos_probe_exe = b.addExecutable(.{
         .name = "lithos_probe",
         .root_module = b.createModule(.{
@@ -194,13 +194,12 @@ pub fn build(b: *std.Build) void {
     const playground_step = b.step("deepseek_playground", "Run the DeepSeek playground");
     const run_playground = b.addRunArtifact(playground);
     run_playground.addPassthruArgs();
-    // The playground runs out of the build cache rather than from the install
-    // tree, so it is told where that tree is instead of finding it beside
-    // itself. The value is relative and setCwd pins what it is relative to —
-    // the build root, where the default prefix is `zig-out`. Installing
-    // elsewhere with `-p` means naming that prefix here yourself; this step
-    // cannot see it, since Zig resolves the prefix when it installs rather
-    // than when it configures.
+    // The playground runs out of the build cache rather than the install tree,
+    // so it is told where that tree is instead of finding it beside itself.
+    // The value is relative and setCwd pins what it is relative to — the build
+    // root, where the default prefix is `zig-out`. Installing elsewhere with
+    // `-p` means naming that prefix here yourself; this step cannot see it,
+    // since Zig resolves the prefix when it installs, not when it configures.
     run_playground.setCwd(b.path("."));
     run_playground.setEnvironmentVariable("HARNESS1_INSTALL_ROOT", "zig-out");
     run_playground.step.dependOn(&credentials.step);

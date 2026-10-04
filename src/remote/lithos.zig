@@ -41,7 +41,6 @@ const json_encoder = @import("../json_encoder.zig");
 /// to this constant, not to a path.
 pub const default_base_url = "https://api.lithosai.cloud/v1";
 
-/// How much of a failed response is read for the message.
 const max_error_body = 64 << 10;
 
 // ---------------------------------------------------------------------------
@@ -50,7 +49,6 @@ const max_error_body = 64 << 10;
 
 /// An error response from the API, as much of the envelope as was decodable.
 pub const APIError = struct {
-    /// HTTP status of the response.
     status_code: u16,
     /// Which error shape the body carried.
     form: Form = .envelope,
@@ -80,8 +78,7 @@ pub const APIError = struct {
         plain,
     };
 
-    /// Frees the strings. `allocator` must be the one the client was built
-    /// with.
+    /// `allocator` must be the one the client was built with.
     pub fn deinit(self: *APIError, allocator: Allocator) void {
         allocator.free(self.message);
         allocator.free(self.type);
@@ -109,8 +106,7 @@ pub const APIError = struct {
     }
 };
 
-/// Decodes the body of a non-2xx response into an `APIError`. Pure: no socket,
-/// no client, so it is testable against canned bytes.
+/// Pure: no socket, no client, so it is testable against canned bytes.
 ///
 /// Both documented shapes are read, and a body that is neither is kept whole
 /// as `message` — a 400 can arrive as plain text
@@ -139,7 +135,6 @@ pub fn parseError(allocator: Allocator, status_code: u16, body: []const u8) Allo
         },
     };
 
-    // Envelope: {"error": {...}}.
     if (root.get("error")) |envelope| {
         switch (envelope) {
             .object => |fields| {
@@ -150,7 +145,6 @@ pub fn parseError(allocator: Allocator, status_code: u16, body: []const u8) Allo
         }
     }
 
-    // Engine passthrough: {"object":"error", ...}.
     if (stringField(root, "object")) |object| {
         if (std.mem.eql(u8, object, "error")) {
             out.form = .engine;
@@ -162,8 +156,7 @@ pub fn parseError(allocator: Allocator, status_code: u16, body: []const u8) Allo
     return out;
 }
 
-/// Fills `message`, `type`, `param` and `code` from an error object. `code`
-/// may be a string or a number; both render to text.
+/// `code` may be a string or a number; both render to text.
 fn readFields(
     allocator: Allocator,
     out: APIError,
@@ -184,8 +177,6 @@ fn readFields(
     return result;
 }
 
-/// An object field that is a string, or null when it is absent or another
-/// type.
 fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
     return switch (value) {
@@ -200,7 +191,6 @@ pub fn Result(comptime Success: type, comptime Failure: type) type {
         ok: Success,
         err: Failure,
 
-        /// The failure, when there is one.
         pub fn failure(self: @This()) ?Failure {
             return switch (self) {
                 .ok => null,
@@ -252,7 +242,6 @@ pub const Usage = struct {
     completion_tokens_details: ?CompletionTokensDetails = null,
 };
 
-/// Breaks the completion tokens down by reasoning.
 pub const CompletionTokensDetails = struct {
     reasoning_tokens: i64 = 0,
 };
@@ -282,8 +271,7 @@ pub const Client = struct {
         ApiKeyRequired,
     };
 
-    /// Returns a client authenticated with `api_key`. The key and any
-    /// configured base URL must outlive the client.
+    /// The key and any configured base URL must outlive the client.
     pub fn init(allocator: Allocator, io: Io, api_key: []const u8, options: Options) InitError!Client {
         if (std.mem.trim(u8, api_key, " \t\r\n").len == 0) return error.ApiKeyRequired;
         const base = options.base_url orelse default_base_url;
@@ -296,7 +284,7 @@ pub const Client = struct {
         };
     }
 
-    /// Releases the connection pool. All responses must be deinited first.
+    /// All responses must be deinited first.
     pub fn deinit(self: *Client) void {
         self.http_client.deinit();
         self.* = undefined;
@@ -382,7 +370,6 @@ pub const Client = struct {
         return .{ .ok = response };
     }
 
-    /// Reads the API's error body and the retry headers that come with it.
     fn readApiError(self: *Client, head: *http.Client.Response) !APIError {
         // The retry headers are read first: initializing the body reader below
         // invalidates the header bytes they point into.
@@ -401,8 +388,6 @@ pub const Client = struct {
     }
 };
 
-/// Reads at most `buffer.len` bytes and returns how many landed in `buffer`.
-///
 /// A body that breaks partway is not an error here: what arrived is what the
 /// caller has. The count comes from the writes, not from the buffer's length,
 /// because an allocation is not zeroed and the tail would be uninitialized.
@@ -421,7 +406,7 @@ fn readUpTo(reader: *Io.Reader, buffer: []u8) usize {
     return length;
 }
 
-/// The first header named `name`, or null. Names compare case-insensitively.
+/// Names compare case-insensitively.
 fn headerValue(head: *const http.Client.Response, name: []const u8) ?[]const u8 {
     var iterator = head.head.iterateHeaders();
     while (iterator.next()) |header| {
@@ -443,8 +428,7 @@ fn headerBool(head: *const http.Client.Response, name: []const u8) ?bool {
     return null;
 }
 
-/// Reads the rate-limit headers into an owned struct. Best-effort: a header
-/// that is absent or unparsable stays null.
+/// Best-effort: a header that is absent or unparsable stays null.
 fn parseRateLimits(allocator: Allocator, head: *const http.Client.Response) !RateLimits {
     var limits: RateLimits = .{
         .limit_requests = headerInt(head, "x-ratelimit-limit-requests"),
@@ -470,8 +454,8 @@ pub const Response = struct {
     transfer_buffer: []u8,
     rate_limits: RateLimits,
 
-    /// Releases the connection. Anything read out of the body before this
-    /// call stays valid; the body itself does not.
+    /// Anything read out of the body before this call stays valid; the body
+    /// itself does not.
     pub fn deinit(self: *Response) void {
         const allocator = self.allocator;
         self.rate_limits.deinit(allocator);
@@ -481,28 +465,24 @@ pub const Response = struct {
         allocator.destroy(self);
     }
 
-    /// The HTTP status of the response.
     pub fn status(self: *const Response) u16 {
         return @backingInt(self.head.head.status);
     }
 
-    /// The per-minute budgets the API reported on this response.
     pub fn rateLimits(self: *const Response) RateLimits {
         return self.rate_limits;
     }
 
-    /// The response body as a streaming reader. May be called once.
+    /// May be called once.
     pub fn reader(self: *Response) *Io.Reader {
         return self.head.reader(self.transfer_buffer);
     }
 
-    /// The error behind a failed read of `reader`, when there is one.
     pub fn bodyErr(self: *Response) ?http.Reader.BodyError {
         return self.head.bodyErr();
     }
 
-    /// Reads the body as a JSON document of type `T`. The returned value owns
-    /// its strings and must be deinited.
+    /// The returned value owns its strings and must be deinited.
     pub fn parse(self: *Response, comptime T: type) !std.json.Parsed(T) {
         var source = std.json.Reader.init(self.allocator, self.reader());
         defer source.deinit();
@@ -525,7 +505,6 @@ const SseReader = struct {
     /// The data of the event being decoded; valid until the next call.
     data: std.ArrayList(u8) = .empty,
 
-    /// Returns the data of the next event, or null once the stream ends.
     /// Multiple data fields of one event are joined with a newline.
     fn next(self: *SseReader) !?[]const u8 {
         self.data.clearRetainingCapacity();
@@ -592,8 +571,8 @@ pub fn EventStream(comptime Chunk: type) type {
         failure: ?ReadError = null,
         finished: bool = false,
 
-        /// Releases the connection. Anything already received stays valid
-        /// only in the allocator it was parsed into.
+        /// Anything already received stays valid only in the allocator it was
+        /// parsed into.
         pub fn deinit(self: *Self) void {
             if (self.response) |response| response.deinit();
             self.sse.data.deinit(self.allocator);
@@ -627,13 +606,10 @@ pub fn EventStream(comptime Chunk: type) type {
             }
         }
 
-        /// The tokens the API reported for the request, or null while they
-        /// have not arrived.
         pub fn usage(self: *const Self) ?Usage {
             return self.usage_value;
         }
 
-        /// Closes the stream and remembers `err` as its terminal state.
         fn fail(self: *Self, err: ReadError) ReadError {
             if (self.response) |response| response.deinit();
             self.response = null;
@@ -643,7 +619,6 @@ pub fn EventStream(comptime Chunk: type) type {
     };
 }
 
-/// Wraps a `*Response` into a stream of `Chunk` events.
 pub fn newEventStream(comptime Chunk: type, response: *Response) EventStream(Chunk) {
     return .{
         .allocator = response.allocator,
@@ -677,8 +652,7 @@ pub const models = struct {
         data: []const Model = &.{},
     };
 
-    /// Lists the models this organization can call. Credential-scoped: the
-    /// endpoint answers 401 without a valid key.
+    /// Credential-scoped: the endpoint answers 401 without a valid key.
     pub fn list(client: *Client) !Result(std.json.Parsed(List), APIError) {
         const response = switch (try client.fetch(.GET, path, null, false)) {
             .ok => |response| response,
@@ -688,8 +662,8 @@ pub const models = struct {
         return .{ .ok = try response.parse(List) };
     }
 
-    /// Retrieves one model by its id, e.g. `moonshotai/Kimi-K3`. The id is
-    /// sent as the two path segments it already is.
+    /// The id is sent as the two path segments it already is, e.g.
+    /// `moonshotai/Kimi-K3`.
     pub fn retrieve(client: *Client, id: []const u8) !Result(std.json.Parsed(Model), APIError) {
         const arena = client.allocator;
         const endpoint = try std.fmt.allocPrint(arena, "{s}/{s}", .{ path, id });
@@ -817,7 +791,6 @@ pub const chat = struct {
         }
     }
 
-    /// Returns text content, the common case.
     pub fn text(content: []const u8) Content {
         return .{ .text = content };
     }
@@ -844,7 +817,6 @@ pub const chat = struct {
             },
         };
 
-        /// The API role of the message.
         pub fn role(self: Message) []const u8 {
             return switch (self) {
                 .system => Role.system,
@@ -881,7 +853,6 @@ pub const chat = struct {
         /// The answer text; the empty text when the turn only calls tools.
         content: Content = .{ .text = "" },
         name: ?[]const u8 = null,
-        /// The calls the model requested in this turn.
         tool_calls: ?[]const ToolCall = null,
         /// The chain of thought behind the turn, when the model emitted one.
         reasoning_content: ?[]const u8 = null,
@@ -905,7 +876,6 @@ pub const chat = struct {
         name: []const u8,
     };
 
-    /// Returns a tool message answering the tool call with the given id.
     pub fn toolResult(tool_call_id: []const u8, content: []const u8) ToolMessage {
         return .{ .tool_call_id = tool_call_id, .content = text(content) };
     }
@@ -1199,11 +1169,8 @@ pub const chat = struct {
         reasoning_content: ?[]const u8 = null,
         tool_calls: ?[]const ToolCall = null,
 
-        /// Converts the generated message into an assistant turn to replay in
-        /// the next request, keeping the chain of thought and the tool calls.
-        ///
-        /// note: the turn borrows this message's memory, so it is readable
-        /// only while the response it was read out of is alive.
+        /// The turn borrows this message's memory, so it is readable only while
+        /// the response it was read out of is alive.
         pub fn toAssistant(self: GeneratedMessage) AssistantMessage {
             return .{
                 .content = text(self.content orelse ""),
@@ -1230,8 +1197,8 @@ pub const chat = struct {
         choices: []const Choice = &.{},
         usage: ?Usage = null,
 
-        /// The message of the first choice. A response carrying none reads as
-        /// a zero message rather than a panic.
+        /// A response carrying no choices reads as a zero message rather than a
+        /// panic.
         pub fn message(self: *const Completion) GeneratedMessage {
             if (self.choices.len == 0) return .{};
             return self.choices[0].message;
@@ -1264,8 +1231,7 @@ pub const chat = struct {
         tool_calls: ?[]const ToolCall = null,
     };
 
-    /// Sends a non-streaming request. A request that asks for streaming is
-    /// refused; use `sendStream`.
+    /// A request that asks for streaming is refused; use `sendStream`.
     pub fn send(client: *Client, request: *const Request) !Result(std.json.Parsed(Completion), Failure) {
         if (request.stream orelse false) return .{ .err = .stream_requested };
         if (request.check(false)) |invalid| return .{ .err = .{ .invalid = invalid } };
@@ -1279,9 +1245,8 @@ pub const chat = struct {
         return .{ .ok = try response.parse(Completion) };
     }
 
-    /// Sends a streaming request and returns the event stream. The request is
-    /// sent with `stream` true whatever `request.stream` says, and the caller
-    /// must deinit the returned stream.
+    /// The request is sent with `stream` true whatever `request.stream` says,
+    /// and the caller must deinit the returned stream.
     pub fn sendStream(client: *Client, request: *const Request) !Result(Stream, Failure) {
         if (request.check(true)) |invalid| return .{ .err = .{ .invalid = invalid } };
         var body = request.*;
@@ -1299,7 +1264,6 @@ pub const chat = struct {
     pub const Stream = struct {
         inner: EventStream(Chunk),
 
-        /// Releases the connection.
         pub fn deinit(self: *Stream) void {
             self.inner.deinit();
         }
@@ -1310,7 +1274,6 @@ pub const chat = struct {
             return self.inner.recv(arena);
         }
 
-        /// The tokens the API reported, or null while they have not arrived.
         pub fn usage(self: *const Stream) ?Usage {
             return self.inner.usage();
         }

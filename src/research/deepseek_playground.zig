@@ -14,7 +14,6 @@ const harness1 = @import("harness1");
 const deepseek = harness1.deepseek;
 const keys = harness1.keys;
 
-/// The prompt sent as the single user turn.
 const prompt = "Hello";
 
 pub fn main(init: std.process.Init) !void {

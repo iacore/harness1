@@ -70,7 +70,6 @@ def loop(agent, prompt=None, poll=None, budget=8, seconds=None, stream=True, on_
         reason = agent.stop_reason
         calls = turn.get("tool_calls") or []
 
-        # The rule the whole loop turns on.
         more = reason in RUNNABLE and len(calls) > 0
 
         if reason in ("error", "aborted"):
@@ -136,8 +135,6 @@ def main():
     shown = None
 
     def render(chunk):
-        """Prints a turn as it arrives, labelling the chain of thought and the
-        answer as the model moves between them."""
         nonlocal shown
         for label, piece in (("think", chunk_reasoning(chunk)), ("answer", chunk_text(chunk))):
             if not piece:

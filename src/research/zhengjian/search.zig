@@ -35,7 +35,6 @@ const deepseek = harness1.deepseek;
 const keys = harness1.keys;
 const chat = deepseek.chat;
 
-/// One question, and what an acceptable answer to it must do.
 const Case = struct {
     id: []const u8,
     /// Where the expectation comes from, for the report.
@@ -366,14 +365,12 @@ pub fn main(init: std.process.Init) !void {
     if (unjudged_total != 0) std.process.exit(Exit.unjudged);
 }
 
-/// Writes `s` left-aligned in a field of `width`.
 fn pad(out: *Io.Writer, s: []const u8, width: usize) !void {
     try out.writeAll(s);
     var written = s.len;
     while (written < width) : (written += 1) try out.writeByte(' ');
 }
 
-/// Writes `s` right-aligned in a field of `width`.
 fn rpad(out: *Io.Writer, s: []const u8, width: usize) !void {
     var written = s.len;
     while (written < width) : (written += 1) try out.writeByte(' ');
@@ -392,10 +389,8 @@ fn usage(out: *Io.Writer) void {
     std.process.exit(Exit.bad_usage);
 }
 
-/// Puts the question to the model under the technique's system message and
-/// returns the answer text. Thinking, when off, still returns the completion
-/// itself; the answer is what the judge sees either way, never the chain of
-/// thought.
+/// Thinking, when off, still returns the completion itself; the answer is what
+/// the judge sees either way, never the chain of thought.
 fn ask(
     client: *deepseek.Client,
     allocator: std.mem.Allocator,

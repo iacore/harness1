@@ -1,5 +1,7 @@
 # deepseek-flash without thinking
 
+This applies to api.deepseek.com.
+
 What the model still does when `thinking` is disabled, measured against the live
 API on 2026-10-01. Model id `deepseek-flash`, i.e. DeepSeek-V4.1-Flash, served by
 DeepSeek's own endpoint. Readings come from `src/research/flash_probe.py`; every

@@ -1,15 +1,9 @@
 //! DeepSeek API client.
 //!
-//! The shared layer is the authenticated client and its options, the error
-//! envelope, the server-sent-event reader, and the usage, stop-sequence and
-//! stream-option types. Two namespaces carry the endpoints:
-//!
-//!   * `chat` — POST /chat/completions
-//!   * `fim`  — the Beta FIM completion endpoint POST /completions
-//!
-//! One `Client` serves both. Everything here uses `std`; HTTP and its
-//! streaming response bodies come from `std.http.Client`, so no third-party
-//! dependency is needed.
+//! Two namespaces carry the endpoints: `chat` for POST /chat/completions and
+//! `fim` for the Beta POST /completions. One `Client` serves both; HTTP and
+//! its streaming response bodies come from `std.http.Client`, so no
+//! third-party dependency is needed.
 //!
 //! Deciding points:
 //!
@@ -74,7 +68,6 @@ pub const CompletionTokensDetails = struct {
     reasoning_tokens: i64 = 0,
 };
 
-/// Configures a streamed response.
 pub const StreamOptions = struct {
     /// Puts a usage field on every chunk, null except on the last. The last
     /// chunk carries the usage of the whole request either way.
@@ -94,8 +87,6 @@ pub const Stop = struct {
     pub const json = .{ .encode = encodeStop };
 };
 
-/// Writes one sequence as a string and several as an array, which is the shape
-/// the API accepts.
 fn encodeStop(e: *json_encoder.Encoder, stop: Stop) json_encoder.Error!void {
     if (stop.sequences.len == 1) return e.string(stop.sequences[0]);
     try e.beginArray();
@@ -108,7 +99,6 @@ const max_error_body = 64 << 10;
 
 /// An error response from the API, as much of the envelope as was decodable.
 pub const APIError = struct {
-    /// HTTP status of the response.
     status_code: u16,
     /// The API's `error.message`, or the raw body when it was not an envelope.
     message: []u8 = &.{},
@@ -157,7 +147,6 @@ pub fn Result(comptime Success: type, comptime Failure: type) type {
         ok: Success,
         err: Failure,
 
-        /// The failure, when there is one.
         pub fn failure(self: @This()) ?Failure {
             return switch (self) {
                 .ok => null,
@@ -180,7 +169,6 @@ pub fn Collected(comptime T: type) type {
     };
 }
 
-/// Sends requests to the DeepSeek API.
 pub const Client = struct {
     allocator: Allocator,
     io: Io,
@@ -226,7 +214,6 @@ pub const Client = struct {
         self.* = undefined;
     }
 
-    /// Reports whether the client was built for the Beta API root.
     pub fn isBeta(self: *const Client) bool {
         return self.beta;
     }
@@ -418,7 +405,6 @@ pub const Response = struct {
         allocator.destroy(self);
     }
 
-    /// The HTTP status of the response.
     pub fn status(self: *const Response) u16 {
         return @backingInt(self.head.head.status);
     }
@@ -428,7 +414,6 @@ pub const Response = struct {
         return self.head.reader(self.transfer_buffer);
     }
 
-    /// The error behind a failed read of `reader`, when there is one.
     pub fn bodyErr(self: *Response) ?http.Reader.BodyError {
         return self.head.bodyErr();
     }
@@ -561,7 +546,6 @@ pub fn EventStream(comptime Chunk: type) type {
             return self.usage_value;
         }
 
-        /// Closes the stream and remembers `err` as its terminal state.
         fn fail(self: *Self, err: ReadError) ReadError {
             if (self.response) |response| response.deinit();
             self.response = null;
@@ -571,7 +555,6 @@ pub fn EventStream(comptime Chunk: type) type {
     };
 }
 
-/// Wraps a `*Response` into a stream of `Chunk` events.
 pub fn newEventStream(comptime Chunk: type, response: *Response) EventStream(Chunk) {
     return .{
         .allocator = response.allocator,
@@ -582,11 +565,6 @@ pub fn newEventStream(comptime Chunk: type, response: *Response) EventStream(Chu
 
 /// Chat Completions: POST /chat/completions, as documented at
 /// https://api-docs.deepseek.com/api/create-chat-completion.
-///
-/// It covers the full request surface — messages with text, image and file
-/// parts, thinking mode, tool calling, JSON output, logprobs, stop sequences,
-/// streaming — the non-streaming and streaming response shapes, and the API's
-/// error envelope.
 ///
 /// Two features are restricted to the Beta API root and are rejected by `chat`
 /// and `chatStream` unless the client was built with `beta = true`: Chat Prefix
@@ -688,7 +666,6 @@ pub const chat = struct {
     pub const File = union(enum) {
         /// An id of the form file-api-...
         id: struct { file_id: []const u8 },
-        /// The image carried inline.
         data: FileData,
 
         pub const json = .{
@@ -708,23 +685,18 @@ pub const chat = struct {
         pub const json = .{ .fields = .{ .data = .{ .key = "file_data" } } };
     };
 
-    /// Returns a text content part.
     pub fn textPart(content: []const u8) Part {
         return .{ .text = content };
     }
 
-    /// Returns an image content part addressed by URL or data URL.
     pub fn imageUrlPart(url: []const u8, detail: ?ImageDetail) Part {
         return .{ .image_url = .{ .url = url, .detail = detail } };
     }
 
-    /// Returns an image content part naming a file uploaded with the Files
-    /// API.
     pub fn fileIdPart(id: []const u8) Part {
         return .{ .file = .{ .id = .{ .file_id = id } } };
     }
 
-    /// Returns an image content part carrying the image inline.
     pub fn fileDataPart(data: []const u8, filename: ?[]const u8) Part {
         return .{ .file = .{ .data = .{ .data = data, .filename = filename } } };
     }
@@ -740,9 +712,6 @@ pub const chat = struct {
         pub const json = .{ .encode = encodeContent };
     };
 
-    /// Writes content the way the API expects it: one text part is a plain
-    /// string, no parts at all is the empty string, and anything else is an
-    /// array of parts.
     fn encodeContent(e: *json_encoder.Encoder, content: Content) json_encoder.Error!void {
         switch (content) {
             .text => |body| return e.string(body),
@@ -756,7 +725,6 @@ pub const chat = struct {
         }
     }
 
-    /// Returns text content, the common case.
     pub fn text(content: []const u8) Content {
         return .{ .text = content };
     }
@@ -781,7 +749,6 @@ pub const chat = struct {
             },
         };
 
-        /// The API role of the message.
         pub fn role(self: Message) []const u8 {
             return switch (self) {
                 .system => Role.system,
@@ -814,7 +781,6 @@ pub const chat = struct {
         /// own allocation here owns one, and only that caller frees it.
         content: Content = .{ .text = "" },
 
-        /// The calls the model requested in this turn.
         tool_calls: ?[]const ToolCall = null,
 
         /// The chain of thought behind the turn. The API requires it on an
@@ -850,7 +816,6 @@ pub const chat = struct {
         tool_call_id: []const u8,
     };
 
-    /// Returns a tool message answering the tool call with the given id.
     pub fn toolResult(tool_call_id: []const u8, content: []const u8) ToolMessage {
         return .{ .tool_call_id = tool_call_id, .content = content };
     }
@@ -862,7 +827,6 @@ pub const chat = struct {
         function: Function = .{},
     };
 
-    /// The declaration of a callable function.
     pub const Function = struct {
         name: []const u8 = "",
 
@@ -1147,7 +1111,6 @@ pub const chat = struct {
         return e.endObject();
     }
 
-    /// Writes a name-keyed list of schemas, or nothing when there is none.
     fn encodeNamed(e: *json_encoder.Encoder, key: []const u8, named: anytype) json_encoder.Error!void {
         const list = named orelse return;
         try e.key(key);
@@ -1216,8 +1179,6 @@ pub const chat = struct {
 
     /// Selects the tool the model must call.
     pub const ToolChoice = union(enum) {
-        /// Forbids tool calls, or lets the model decide, or forces it to call
-        /// a tool.
         mode: Mode,
         /// Forces the model to call the named function. Not supported in
         /// thinking mode.
@@ -1236,8 +1197,6 @@ pub const chat = struct {
         pub const json = .{ .encode = encodeToolChoice };
     };
 
-    /// Writes a bare mode as a string and a named function as the object the
-    /// API expects.
     fn encodeToolChoice(e: *json_encoder.Encoder, choice: ToolChoice) json_encoder.Error!void {
         switch (choice) {
             .mode => |mode| return e.string(@tagName(mode)),
@@ -1299,7 +1258,6 @@ pub const chat = struct {
         /// The conversation so far. Required; the API accepts one or more.
         messages: []const Message,
 
-        /// Toggles the chain of thought, which is enabled by default.
         thinking: ?Thinking = null,
 
         /// Selects the thinking budget. `.none` disables thinking mode;
@@ -1311,7 +1269,6 @@ pub const chat = struct {
         /// `.max`.
         max_tokens: ?i64 = null,
 
-        /// Asks for plain text or for a JSON object.
         response_format: ?ResponseFormat = null,
 
         /// Up to `max_stop_sequences` sequences at which generation stops.
@@ -1331,13 +1288,10 @@ pub const chat = struct {
         /// effective range is 0.95 to 1.
         top_p: ?f64 = null,
 
-        /// The functions the model may call.
         tools: ?[]const Tool = null,
 
-        /// Constrains tool calling.
         tool_choice: ?ToolChoice = null,
 
-        /// Asks for the log probabilities of the generated tokens.
         logprobs: ?bool = null,
 
         /// How many alternatives to report per token position, from 0 to
@@ -1700,7 +1654,6 @@ pub const chat = struct {
         }
     };
 
-    /// The length of the content of a message, in parts.
     fn contentLength(content: Content) usize {
         return switch (content) {
             .text => |body| if (body.len == 0) 0 else 1,
@@ -1717,7 +1670,6 @@ pub const chat = struct {
         return true;
     }
 
-    /// `^[a-zA-Z0-9\-_]+$`.
     fn isUserId(user_id: []const u8) bool {
         return isToolName(user_id);
     }
@@ -1899,18 +1851,14 @@ pub const chat = struct {
         return .{ .ok = .{ .inner = newEventStream(Chunk, response) } };
     }
 
-    /// Encodes a request body with the client's allocator.
     fn encode(allocator: Allocator, request: *const Request) ![]u8 {
         return json_encoder.stringify(allocator, request.*);
     }
 
-    /// A streamed Chat Completions response. `recv` returns the chunks in
-    /// order, `usage` the tokens billed for the request, and `collect`
-    /// assembles the whole response instead.
+    /// A streamed Chat Completions response.
     pub const Stream = struct {
         inner: EventStream(Chunk),
 
-        /// Releases the connection.
         pub fn deinit(self: *Stream) void {
             self.inner.deinit();
         }
@@ -2361,18 +2309,14 @@ pub const fim = struct {
         return .{ .ok = .{ .inner = newEventStream(Chunk, response) } };
     }
 
-    /// Encodes a request body with the client's allocator.
     fn encode(allocator: Allocator, request: *const Request) ![]u8 {
         return json_encoder.stringify(allocator, request.*);
     }
 
-    /// A streamed FIM completion response. `recv` returns the chunks in order,
-    /// `usage` the tokens billed for the request, and `collect` assembles the
-    /// whole response instead.
+    /// A streamed FIM completion response.
     pub const Stream = struct {
         inner: EventStream(Chunk),
 
-        /// Releases the connection.
         pub fn deinit(self: *Stream) void {
             self.inner.deinit();
         }

@@ -36,7 +36,7 @@ except ImportError as missing:
 
 USAGE = "usage: credentials.py DATABASE PROVIDER"
 
-# The newest credential omp has enabled for one provider. The provider is
+# `disabled_cause IS NULL` is what makes a credential enabled. The provider is
 # bound, never written into the statement.
 SQL = """
 SELECT data FROM auth_credentials
