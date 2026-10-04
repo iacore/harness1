@@ -125,6 +125,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("research/omp-features/features.zig"),
             .target = target,
             .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness1", .module = mod },
+            },
         }),
     });
     const omp_features_step = b.step("omp_features", "Attribute every part of every omp session to a named feature");

@@ -20,6 +20,7 @@
         "COPYING.md",
         "src/root.zig",
         "src/json_encoder.zig",
+        "src/omp_features.zig",
         "src/remote",
         "app",
     },
