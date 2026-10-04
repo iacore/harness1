@@ -30,6 +30,7 @@ const harness1 = @import("harness1");
 const lithos = harness1.lithos;
 const chat = lithos.chat;
 const keys = harness1.keys;
+const debug = harness1.debug;
 
 const model = "deepseek-ai/DeepSeek-V4.1-Flash";
 const prompt = "What is the weather in Paris? Call the get_weather tool with the city.";
@@ -87,7 +88,7 @@ pub fn main(init: std.process.Init) !void {
     const err_out = &stderr_file.interface;
 
     const arena = init.arena.allocator();
-    const api_key = try keys.apiKey(arena, io, init.environ_map, keys.Provider.lithosai) orelse {
+    const api_key = try keys.apiKey(arena, io, debug.writer(err_out), init.environ_map, keys.Provider.lithosai) orelse {
         try err_out.writeAll("no LithosAI key: set LITHOSAI_API_KEY, or sign in to the `lithosai` provider of omp\n");
         try err_out.flush();
         return error.ApiKeyRequired;

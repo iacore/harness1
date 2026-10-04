@@ -17,14 +17,16 @@
 //!     whichever source it came from, so the caller always frees it and never
 //!     has to ask where it came from.
 //!   * A store that is not there yields no key, as does a credential that is
-//!     not an API key. A store that is there and could not be read is an
-//!     error, because that is not "no credential", it is a store that is not
-//!     what this file thinks it is.
+//!     not an API key. A store that is there but cannot be read — no helper, or
+//!     a helper that failed — is reported to the caller's logger and yields no
+//!     key too: without the store there is no key, and stopping the program
+//!     over that is the caller's call, not this file's.
 
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
+const DebugLogger = @import("../debug.zig").DebugLogger;
 
 /// Where omp keeps the credentials it authenticates providers with, relative
 /// to the home directory.
@@ -59,67 +61,72 @@ pub const Provider = struct {
     };
 };
 
-/// The ways reading the store can fail. A store that is absent, or that has no
-/// credential for the provider, is not among them.
-pub const Error = Allocator.Error || error{
-    /// The helper could not be run: `python3` is not on the PATH, or no
-    /// `omp-keys.py` is where one is expected. The store was never asked.
-    HelperUnavailable,
-    /// The helper ran and could not read the store. It said why on its stderr,
-    /// which is dropped: the caller can do nothing with it that this error
-    /// does not already say.
-    HelperFailed,
-};
-
+/// Tries to fetch a given API key
+/// the returned string is owned by `allocator`
 pub fn apiKey(
     allocator: Allocator,
     io: Io,
+    logger: anytype,
     environ: *const std.process.Environ.Map,
     provider: Provider,
-) Error!?[]const u8 {
+) Allocator.Error!?[]const u8 {
     if (environ.get(provider.env_var)) |key| {
         if (key.len != 0) return try allocator.dupe(u8, key);
     }
-    return storedApiKey(allocator, io, environ, provider.store_name);
+    return storedApiKey(allocator, io, logger, environ, provider.store_name);
 }
 
 /// The credential omp stores for `store_name`, or null when none is enabled.
 fn storedApiKey(
     allocator: Allocator,
     io: Io,
+    logger: anytype,
     environ: *const std.process.Environ.Map,
     store_name: []const u8,
-) Error!?[]const u8 {
+) Allocator.Error!?[]const u8 {
     const home = environ.get("HOME") orelse return null;
     const db = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, credentials_path });
     defer allocator.free(db);
     // Nothing to read: do not go looking for something to read it with.
     std.Io.Dir.cwd().access(io, db, .{}) catch return null;
 
-    const helper = try helperPath(allocator, io, environ);
+    const helper = (try helperPath(allocator, io, environ)) orelse {
+        logger.report("keys:python_helper_unavailable", "no install root, and no executable directory to derive one from", .{});
+        return null;
+    };
     defer allocator.free(helper);
-    // Separated from the store's own failures, so that a broken install does
-    // not read as a store that refused to answer.
-    std.Io.Dir.cwd().access(io, helper, .{}) catch return error.HelperUnavailable;
+    std.Io.Dir.cwd().access(io, helper, .{}) catch {
+        logger.report("keys:python_helper_unavailable", "no helper at {s}", .{helper});
+        return null;
+    };
 
     const argv = [_][]const u8{ "python3", helper, db, store_name };
     const answered = std.process.run(allocator, io, .{ .argv = &argv }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return error.HelperUnavailable,
+        else => {
+            logger.report("keys:python_helper_unavailable", "cannot run python3: {t}", .{err});
+            return null;
+        },
     };
     defer allocator.free(answered.stdout);
     defer allocator.free(answered.stderr);
 
     const exit_code = switch (answered.term) {
         .exited => |code| code,
-        else => return error.HelperFailed,
+        else => {
+            logger.report("keys:python_helper_failure", "helper {s}: {s}", .{ @tagName(answered.term), answered.stderr });
+            return null;
+        },
     };
     switch (exit_code) {
         // The helper's contract, read off its exit status rather than guessed
         // from its output: a key, or nothing and a reason.
         0 => {},
         1 => return null,
-        else => return error.HelperFailed,
+        else => {
+            logger.report("keys:python_helper_failure", "helper exited {d}: {s}", .{ exit_code, answered.stderr });
+            return null;
+        },
     }
 
     const key = std.mem.trim(u8, answered.stdout, " \t\r\n");
@@ -127,24 +134,27 @@ fn storedApiKey(
     return try allocator.dupe(u8, key);
 }
 
+/// The helper's path, or null when the install root cannot be named: from the
+/// environment, or from the running executable's directory, whose parent holds
+/// the `lib` the install put it under.
 fn helperPath(
     allocator: Allocator,
     io: Io,
     environ: *const std.process.Environ.Map,
-) Error![]u8 {
+) Allocator.Error!?[]u8 {
     if (environ.get(install_root_var)) |root| {
         if (root.len != 0) return try std.fs.path.join(allocator, &.{ root, helper_path });
     }
     const executable_dir = std.process.executableDirPathAlloc(io, allocator) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         // Nowhere to look is the same answer as looking and finding nothing.
-        else => return error.HelperUnavailable,
+        else => return null,
     };
     defer allocator.free(executable_dir);
     // An executable's directory is the root's `bin`, so the root is its
     // parent. Left unresolved: `..` and the `lib` below it are the install
     // layout, and spelling that out again would only restate the `join`.
-    return std.fs.path.join(allocator, &.{ executable_dir, "..", helper_path });
+    return try std.fs.path.join(allocator, &.{ executable_dir, "..", helper_path });
 }
 
 // Tests: only the half that needs no store — reading the environment
@@ -153,20 +163,24 @@ fn helperPath(
 // written twice from the same head, where agreement proves nothing. The store
 // half is checked by running the playground against the real one.
 
-const deepseek = Provider.deepseek;
-
 /// A home directory that is not there, so that the store cannot be opened and
 /// whatever the lookup returns came from the environment.
-const no_home = "/nonexistent/harness1-test-home";
+const test_no_home = "/nonexistent/harness1-test-home";
+
+/// A logger that drops what it is given: no test here reaches a helper, so
+/// nothing is ever reported to it.
+const quiet = DebugLogger(drop){ .context = undefined };
+
+fn drop(_: *anyopaque, comptime _: []const u8, comptime _: []const u8, _: anytype) void {}
 
 test "the environment variable is the key when it is set" {
     const allocator = testing.allocator;
     var environ = std.process.Environ.Map.init(allocator);
     defer environ.deinit();
     try environ.put("DEEPSEEK_API_KEY", "sk-from-environment");
-    try environ.put("HOME", no_home);
+    try environ.put("HOME", test_no_home);
 
-    const key = (try apiKey(allocator, testing.io, &environ, deepseek)) orelse
+    const key = (try apiKey(allocator, testing.io, quiet, &environ, Provider.deepseek)) orelse
         return error.ExpectedKey;
     // The key is the caller's, not the environment's own storage: freeing it
     // must leave the map holding what it held.
@@ -180,9 +194,9 @@ test "an empty environment variable is not a key" {
     var environ = std.process.Environ.Map.init(allocator);
     defer environ.deinit();
     try environ.put("DEEPSEEK_API_KEY", "");
-    try environ.put("HOME", no_home);
+    try environ.put("HOME", test_no_home);
 
-    try testing.expectEqual(null, try apiKey(allocator, testing.io, &environ, deepseek));
+    try testing.expectEqual(null, try apiKey(allocator, testing.io, quiet, &environ, Provider.deepseek));
 }
 
 test "neither a variable nor a home directory is null rather than an error" {
@@ -190,5 +204,17 @@ test "neither a variable nor a home directory is null rather than an error" {
     var environ = std.process.Environ.Map.init(allocator);
     defer environ.deinit();
 
-    try testing.expectEqual(null, try apiKey(allocator, testing.io, &environ, deepseek));
+    try testing.expectEqual(null, try apiKey(allocator, testing.io, quiet, &environ, Provider.deepseek));
+}
+
+test "an unset HOME is null rather than a helper failure" {
+    const allocator = testing.allocator;
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+    // Without a HOME the store is nowhere, so the lookup stops before it names
+    // a helper. A root is given, and holds none; that must not turn a
+    // non-existent store into a report.
+    try environ.put(install_root_var, test_no_home);
+
+    try testing.expectEqual(null, try apiKey(allocator, testing.io, quiet, &environ, Provider.deepseek));
 }

@@ -2,6 +2,7 @@ const std = @import("std");
 const Io = std.Io;
 
 pub const json_encoder = @import("json_encoder.zig");
+pub const debug = @import("debug.zig");
 pub const omp_features = @import("omp_features.zig");
 pub const keys = @import("./remote/keys.zig");
 pub const deepseek = @import("./remote/deepseek.zig");

@@ -15,6 +15,7 @@ const Io = std.Io;
 const harness1 = @import("harness1");
 const lithos = harness1.lithos;
 const keys = harness1.keys;
+const debug = harness1.debug;
 
 /// Relative to the build root.
 const output_path = "src/remote/lithos_models.zig";
@@ -32,7 +33,7 @@ pub fn main(init: std.process.Init) !void {
 
     // The arena outlives the client that borrows the key.
     const arena = init.arena.allocator();
-    const api_key = try keys.apiKey(arena, io, init.environ_map, keys.Provider.lithosai) orelse {
+    const api_key = try keys.apiKey(arena, io, debug.writer(err_out), init.environ_map, keys.Provider.lithosai) orelse {
         try err_out.writeAll("no LithosAI key: set LITHOSAI_API_KEY, or sign in to the `lithosai` provider of omp\n");
         try err_out.flush();
         return error.ApiKeyRequired;
