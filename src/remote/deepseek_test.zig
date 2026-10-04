@@ -1,7 +1,13 @@
 //! Tests for the DeepSeek client.
 //!
-//! A one-connection-per-reply server built on `std.http.Server` answers the
-//! client: it records what the request carried and replies with canned bytes.
+//! FAKE API. Nothing here talks to `api.deepseek.com`. Every test answers
+//! through `FakeServer` below: a one-connection-per-reply server we wrote,
+//! speaking the API only as we transcribed it from the reference pages. The
+//! canned bytes are our reading of those pages, so a field the real API sends
+//! that we never wrote into a reply is invisible, and a page we misread passes
+//! — client and fixture share the misreading. These tests pin the client to
+//! the transcription; they cannot say the transcription is right. Only a run
+//! against the live API can, which is `zig build deepseek_playground`.
 
 const std = @import("std");
 const Io = std.Io;
@@ -16,7 +22,7 @@ const chat = deepseek.chat;
 const fim = deepseek.fim;
 const json_encoder = @import("../json_encoder.zig");
 
-// What the test server saw of one request. Owned by the server's arena.
+// Owned by the server's arena.
 const Recorded = struct {
     method: []const u8 = "",
     target: []const u8 = "",
@@ -26,8 +32,8 @@ const Recorded = struct {
     body: []const u8 = "",
 };
 
-// One canned reply. `parts` is the body, sent as separate flushes when
-// `chunked`, which is what a streamed response needs.
+// `parts` is the body, sent as separate flushes when `chunked`, which is what
+// a streamed response needs.
 const Reply = struct {
     status: u16 = 200,
     content_type: ?[]const u8 = null,
@@ -35,10 +41,11 @@ const Reply = struct {
     chunked: bool = false,
 };
 
-// A test HTTP server that answers `replies.len` requests, one connection
-// each. Connections are closed after every reply, so the client cannot reuse
-// one and the server's accept loop stays in step with the replies.
-const TestServer = struct {
+// The fake API: answers `replies.len` requests, one connection each, with the
+// canned `Reply` bytes the test handed it. Not `api.deepseek.com` and never a
+// check on it — see the module comment. Connections are closed after every
+// reply, so the client cannot reuse one and the accept loop stays in step.
+const FakeServer = struct {
     allocator: Allocator,
     io: Io,
     listener: Io.net.Server,
@@ -55,7 +62,7 @@ const TestServer = struct {
     // `replies` is borrowed and must outlive the server, so pass the address
     // of a caller-local array; a temporary would dangle the moment init
     // returns.
-    fn init(allocator: Allocator, io: Io, replies: []const Reply) !TestServer {
+    fn init(allocator: Allocator, io: Io, replies: []const Reply) !FakeServer {
         var address: Io.net.IpAddress = try .parse("127.0.0.1", 0);
         return .{
             .allocator = allocator,
@@ -66,16 +73,19 @@ const TestServer = struct {
         };
     }
 
-    fn start(self: *TestServer) !void {
+    fn start(self: *FakeServer) !void {
         const port = self.listener.socket.address.getPort();
         self.url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}", .{port});
+        // The suite's premise, said where a run will show it: the client's
+        // traffic goes to this process, not to api.deepseek.com.
+        std.debug.print("[fake] deepseek_test: answering from {s}, not api.deepseek.com\n", .{self.url});
         self.thread = try std.Thread.spawn(.{}, run, .{self});
     }
 
     // Waits for the server to answer every reply it was given, waking a
     // thread still blocked in accept: a test whose request never arrives must
     // fail on its own error instead of hanging here and hiding it.
-    fn finish(self: *TestServer) void {
+    fn finish(self: *FakeServer) void {
         if (self.thread) |thread| {
             // Shutting the listening socket down wakes a blocked accept.
             var listener: Io.net.Stream = .{ .socket = self.listener.socket };
@@ -85,7 +95,7 @@ const TestServer = struct {
         }
     }
 
-    fn deinit(self: *TestServer) void {
+    fn deinit(self: *FakeServer) void {
         self.finish();
         if (!self.stopped) {
             self.listener.deinit(self.io);
@@ -100,20 +110,20 @@ const TestServer = struct {
     }
 
     // Reports a failure from the server thread, which cannot return an error.
-    fn fail(self: *TestServer, comptime fmt: []const u8, args: anytype) void {
+    fn fail(self: *FakeServer, comptime fmt: []const u8, args: anytype) void {
         const message = std.fmt.allocPrint(self.arena.allocator(), fmt, args) catch return;
         self.failures.append(self.allocator, message) catch {};
     }
 
-    fn expectNoFailures(self: *TestServer) !void {
+    fn expectNoFailures(self: *FakeServer) !void {
         if (self.failures.items.len != 0) {
             std.debug.print("server failures:\n", .{});
             for (self.failures.items) |failure| std.debug.print("  {s}\n", .{failure});
-            return error.TestServerFailed;
+            return error.FakeServerFailed;
         }
     }
 
-    fn run(self: *TestServer) void {
+    fn run(self: *FakeServer) void {
         const io = self.io;
         for (self.replies) |_| {
             const stream = self.listener.accept(io) catch |err| {
@@ -142,7 +152,7 @@ const TestServer = struct {
         }
     }
 
-    fn record(self: *TestServer, request: *http.Server.Request) !void {
+    fn record(self: *FakeServer, request: *http.Server.Request) !void {
         const arena = self.arena.allocator();
         var recorded: Recorded = .{
             .method = @tagName(request.head.method),
@@ -172,7 +182,7 @@ const TestServer = struct {
         try self.recorded.append(self.allocator, recorded);
     }
 
-    fn reply(self: *TestServer, request: *http.Server.Request, buffer: []u8) !void {
+    fn reply(self: *FakeServer, request: *http.Server.Request, buffer: []u8) !void {
         const canned = self.replies[self.recorded.items.len - 1];
         var options: http.Server.Request.RespondOptions = .{
             .status = @fromBackingInt(@intCast(canned.status)),
@@ -189,7 +199,6 @@ const TestServer = struct {
             }
             try body.end();
         } else {
-            // A single part is the whole body; several are joined.
             var joined: std.ArrayListUnmanaged(u8) = .empty;
             defer joined.deinit(self.allocator);
             for (canned.parts) |part| try joined.appendSlice(self.allocator, part);
@@ -198,8 +207,8 @@ const TestServer = struct {
     }
 };
 
-// A client pointed at the test server. The server must outlive it.
-fn testClient(allocator: Allocator, server: *const TestServer, beta: bool) !Client {
+// The server must outlive the returned client.
+fn testClient(allocator: Allocator, server: *const FakeServer, beta: bool) !Client {
     return Client.init(allocator, testing.io, "test-key", .{
         .base_url = server.url,
         .beta = beta,
@@ -285,7 +294,7 @@ test "the documented chat request body" {
             \\{"id":"x","object":"chat.completion","choices":[]}
         },
     }};
-    var server = try TestServer.init(gpa, testing.io, &replies);
+    var server = try FakeServer.init(gpa, testing.io, &replies);
     defer server.deinit();
     try server.start();
 
@@ -468,7 +477,7 @@ test "a strict tool needs the Beta root" {
     const replies = [_]Reply{.{ .parts = &.{
         \\{"id":"x","choices":[]}
     } }};
-    var server = try TestServer.init(gpa, testing.io, &replies);
+    var server = try FakeServer.init(gpa, testing.io, &replies);
     defer server.deinit();
     try server.start();
 
@@ -509,7 +518,7 @@ test "unset chat parameters are absent from the body" {
     const replies = [_]Reply{.{ .parts = &.{
         \\{"id":"x","object":"chat.completion","choices":[]}
     } }};
-    var server = try TestServer.init(gpa, testing.io, &replies);
+    var server = try FakeServer.init(gpa, testing.io, &replies);
     defer server.deinit();
     try server.start();
 
@@ -540,7 +549,7 @@ test "the documented message shapes" {
     const replies = [_]Reply{.{ .parts = &.{
         \\{"id":"x","choices":[]}
     } }};
-    var server = try TestServer.init(gpa, testing.io, &replies);
+    var server = try FakeServer.init(gpa, testing.io, &replies);
     defer server.deinit();
     try server.start();
 
@@ -600,7 +609,7 @@ test "the documented request headers" {
             \\
         },
     }};
-    var server = try TestServer.init(gpa, testing.io, &replies);
+    var server = try FakeServer.init(gpa, testing.io, &replies);
     defer server.deinit();
     try server.start();
 
@@ -639,7 +648,7 @@ test "the documented API roots" {
         const replies = [_]Reply{.{ .parts = &.{
             \\{"id":"x","choices":[]}
         } }};
-        var server = try TestServer.init(gpa, testing.io, &replies);
+        var server = try FakeServer.init(gpa, testing.io, &replies);
         defer server.deinit();
         try server.start();
 
@@ -678,7 +687,7 @@ test "the documented error envelope" {
             \\{"error":{"message":"Rate limit reached","type":"rate_limit_error","param":null,"code":429001}}
         },
     }};
-    var server = try TestServer.init(gpa, testing.io, &replies);
+    var server = try FakeServer.init(gpa, testing.io, &replies);
     defer server.deinit();
     try server.start();
 
@@ -736,7 +745,7 @@ test "the documented chat completion response" {
             \\}
         },
     }};
-    var server = try TestServer.init(gpa, testing.io, &replies);
+    var server = try FakeServer.init(gpa, testing.io, &replies);
     defer server.deinit();
     try server.start();
 
@@ -1045,7 +1054,7 @@ test "the documented FIM request body" {
             \\{"id":"x","object":"text_completion","choices":[]}
         },
     }};
-    var server = try TestServer.init(gpa, testing.io, &replies);
+    var server = try FakeServer.init(gpa, testing.io, &replies);
     defer server.deinit();
     try server.start();
 
@@ -1108,7 +1117,7 @@ test "the documented FIM completion response" {
             \\}
         },
     }};
-    var server = try TestServer.init(gpa, testing.io, &replies);
+    var server = try FakeServer.init(gpa, testing.io, &replies);
     defer server.deinit();
     try server.start();
 
@@ -1246,7 +1255,7 @@ fn streamParts(gpa: Allocator, events: []const []const u8) ![]const []const u8 {
 // Starts a server that streams `events` as server-sent events once per entry
 // of `replies`, which holds the reply storage and must outlive the returned
 // server.
-fn startStreamServer(gpa: Allocator, events: []const []const u8, replies: []Reply) !TestServer {
+fn startStreamServer(gpa: Allocator, events: []const []const u8, replies: []Reply) !FakeServer {
     const parts = try streamParts(gpa, events);
     errdefer {
         for (parts) |part| gpa.free(part);
@@ -1255,7 +1264,7 @@ fn startStreamServer(gpa: Allocator, events: []const []const u8, replies: []Repl
     for (replies) |*reply| {
         reply.* = .{ .content_type = "text/event-stream", .chunked = true, .parts = parts };
     }
-    var server = try TestServer.init(gpa, testing.io, replies);
+    var server = try FakeServer.init(gpa, testing.io, replies);
     server.owned_parts = parts;
     return server;
 }
