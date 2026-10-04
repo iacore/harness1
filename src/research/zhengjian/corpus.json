@@ -1,0 +1,63 @@
+{
+  "_": [
+    "Question/answer tests drawn from the passages in sources.dj.",
+    "",
+    "Each rubric names one mistake and one requirement, and is written so that a",
+    "paraphrase can pass. An earlier version demanded the wording of the sutra",
+    "and measured recall instead of the view: it failed answers that described",
+    "世俗正見 as belief in karma and rebirth, which is what 雜阿含經 784 actually",
+    "says, and it failed an answer that admitted it could not recall the exact",
+    "list — which is the conduct these tests exist to reward, not punish.",
+    "",
+    "So the line every rubric draws is between saying something the source",
+    "supports, saying something it does not, and saying that one does not know.",
+    "The third is not a failure. The second is the failure, and",
+    "`zhengsiwei-rendering` is built to provoke it: '出離思惟 / 無恚思惟 /",
+    "無害思惟' is the phrasing that circulates in secondary sources and does not",
+    "occur in the Chinese canon retrieved here."
+  ],
+  "cases": [
+    {
+      "id": "zhengsiwei-content",
+      "source": "雜阿含經 784 / 785",
+      "question": "「正思惟」（正志）在《阿含经》里具体指什么？",
+      "rubric": "通过的条件：指出正志是三项——出要（出離）、無恚、不害。措辞不限，出要志/出要覺/無欲念等同义表述均可；三项中缺一项即不通过。不通过的条件：把「正思惟」解释成一般意义上的思考、推理、多想、反复推敲。仅表示记不清而不能给出三项，也不通过——此义非冷僻，应当能答。"
+    },
+    {
+      "id": "xiezhi-content",
+      "source": "中阿含經 189 聖道經；雜阿含經 1246",
+      "question": "与「正志」相对的「邪志」，《中阿含经》里指的是哪三种？",
+      "rubric": "通过的条件：答出欲（慾）念、恚念、害念三项，或同义的欲覺、恚覺、害覺。三项缺一即不通过。不通过的条件：答成「错误的思考方式」「邪念」「不善的想法」一类泛泛之谈，或改说贪瞋痴而不对照经文。"
+    },
+    {
+      "id": "zhengjian-two-kinds",
+      "source": "雜阿含經 785 / 789",
+      "question": "什么是「正见」？《杂阿含经》把它分成几种？",
+      "rubric": "通过的条件：答出正见有两种——世俗有漏有取的正见，与圣出世間无漏不取的正见；并说明前者是肯定施与、业、业报、此世他世、父母等（即肯定因果与业报），后者是于苦、集、滅、道思惟。措辞不限，「相信因果业报」「四圣谛的观照」等概括均可。不通过的条件：只说一种；把正见笼统定义为「正确的见解」「正确的看法」「不被误导」而不涉两类及其内容；或断言《杂阿含经》没有作此区分。"
+    },
+    {
+      "id": "xiejian-content",
+      "source": "中阿含經 189 聖道經",
+      "question": "《中阿含经·圣道经》里所说的「邪見」，具体是哪些见解？",
+      "rubric": "通过的条件：答出邪见是对施、齋、咒說、善恶业、善恶业报、此世他世、父母、真人（阿罗汉）等的否定——要点是「否定因果与业报」。逐项列举不限，也不必列全，但必须传达出邪见是否定布施、业果、三世、父母这一类。不通过的条件：把邪见泛泛定义为「错误的看法」「违背佛法的见解」「不信佛」「无明」，而不涉及对因果业报的否定。"
+    },
+    {
+      "id": "seeing-wrong-view",
+      "source": "中阿含經 189 聖道經",
+      "question": "《中阿含经·圣道经》说「若見邪見是邪見者，是謂正見」。这句话是什么意思？",
+      "rubric": "通过的条件：说明能如实认出邪见是邪见，本身即是正见。不通过的条件：解释成「看见别人有邪见就说明自己有正见」，或解释成「知道世间有邪见这回事」，或含糊其辞不作解释。"
+    },
+    {
+      "id": "buzhengsiwei-cause",
+      "source": "雜阿含經 775",
+      "question": "「不正思惟」与「邪見」是什么关系？",
+      "rubric": "通过的条件：说明不正思惟是使未生的邪见生起、已生的邪见增长的条件（因）。措辞不限，「是不善法生起的因」「使邪见增长」等概括均可。不通过的条件：答成「不正思惟就是邪见」；答成两者没有关系；或只说不正思惟是一种错误心态而不涉它与邪见生起增长的关系。"
+    },
+    {
+      "id": "zhengsiwei-rendering",
+      "source": "雜阿含經 784 / 785；中阿含經 189",
+      "question": "《阿含经》中「正志」的三种，在不同经本里分别是怎么表述的？",
+      "rubric": "通过的条件，二者之一即可：(一) 指出各本用词不同并举出至少一处实际表述——如《杂阿含》784 经的「出要志、無恚志、不害志」、785 经的「出要覺、無恚覺、不害覺」、或《中阿含》189 经的「無欲念、無恚念、無害念」；(二) 说明自己不能确知各本的准确措辞。不通过的条件：把「出離思惟、無恚思惟、無害思惟」当作汉文经本的原文或通行的经文表述来给出——这三个词不在所据经本中，这么说即是把见过的说法当成了经文本身。"
+    }
+  ]
+}

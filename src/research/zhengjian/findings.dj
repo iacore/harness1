@@ -1,0 +1,195 @@
+# 正見 / 正思惟 能不能靠提示词得到
+
+Measured 2026-10-03 against the live API, `deepseek-flash`, thinking disabled,
+`temperature 1.0`. Everything below was produced by the programs in this
+directory during that session; nothing is quoted from elsewhere.
+
+Short version: **no prompting technique passed every case, and the two things
+being asked for pull against each other.** An instruction that licences "I do
+not recall" is the only one that reliably stopped the model from passing off a
+circulating-but-unattested phrasing as scripture — and it is also the one that
+most degraded the answers. Instructions to be canonical and precise did not
+reduce the fabrication at all.
+
+Run through `omp` instead of the bare API, the same corpus passes 7/7 — with
+the grounding gate installed and with every extension disabled alike. The gate
+is not the reason and never fires on these questions; the session passes
+because it has tools and goes and reads the source. The tradeoff above is what
+remains when there is nothing to read with.
+
+## The instruments
+
+`judger.zig` — a separate program. One answer in, `{"pass": bool, "why": ...}`
+out, via a **forced** tool call (`tool_choice` names the function, strict schema
+on the Beta root). Forced and not requested: a turn that answers in prose
+instead of calling the tool is an error exit (2), never a silent `false`.
+
+`search.zig` — runs a corpus under several system messages, judging each answer
+by spawning the judger. Neither program grades its own output.
+
+`corpus.json` — seven questions from the passages in `sources.dj`.
+`techniques.json` — the system messages under test.
+
+## What the judger does and does not do
+
+Forced tool calling and thinking are mutually exclusive, and in this repo the
+refusal happens **client-side**: `chat.Request.validate` returns
+`tool_choice_function_in_thinking_mode` and nothing is sent. The Python probe
+`src/research/flash_probe.py` speaks raw `urllib` and so sees the server's own
+400 for the same request. Both are true; they are different layers, and a run
+that reports only one of them is reporting its client, not the API.
+
+Same request judged five times, byte-identical file: five identical verdicts.
+
+## Run 1 — all seven cases, three trials
+
+| technique | passed / 21 | reliable |
+| --- | --- | --- |
+| cite-source | 20 | no |
+| confidence-mark | 20 | no |
+| baseline | 19 | no |
+| canonical-first | 19 | no |
+| sutra-check | 19 | no |
+| term-as-binding | 18 | no |
+| recall-check | 13 | no |
+
+Nothing reliable. The spread is small, so this table does not separate the
+techniques — one case does.
+
+## Run 2 — the one case that separates, twelve trials
+
+`zhengsiwei-rendering` asks how the three items of 正志 are worded in different
+editions. The phrasing that circulates in secondary sources —
+「出離思惟／無恚思惟／無害思惟」 — **does not occur in the Chinese canon
+retrieved here**. The rubric fails an answer that gives it as the sutra's
+wording and passes one that either names an attested rendering or says it
+cannot recall.
+
+| technique | passed / 12 | rate | vs baseline, Fisher two-sided |
+| --- | --- | --- | --- |
+| recall-check | 12 | 1.00 | p = 0.014 |
+| sutra-check | 11 | 0.92 | p = 0.069 |
+| confidence-mark | 10 | 0.83 | p = 0.193 |
+| cite-then-answer | 7 | 0.58 | p = 1.000 |
+| baseline | 6 | 0.50 | — |
+| cite-source | 6 | 0.50 | p = 1.000 |
+| term-as-binding | 4 | 0.33 | p = 0.680 |
+| canonical-first | 3 | 0.25 | p = 0.400 |
+
+Read this table for what it can carry. Only `recall-check` is separated from
+baseline. `sutra-check` is marginal. The three lowest point estimates are **not**
+significantly below baseline at n = 12 — what can be said is that they do not
+help, and that the direction is the wrong one. An earlier three-trial version
+of this run put `cite-source` at 3/3; at twelve trials it is 6/12, exactly
+baseline. Twelve attempts is the smallest number here that would have caught
+that.
+
+## Run 3 — the same corpus through `omp`
+
+`omp_probe.py` puts each question to the installed `omp`, which has the
+grounding-gate extension and a full toolset, and judges the answer with the
+same judger.
+
+| mode | passed |
+| --- | --- |
+| `--mode gate` (installed configuration) | 7/7 |
+| `--mode plain` (`--no-extensions`) | 7/7 |
+
+Identical, and the gate never fired: **0** gate events across the run, checked
+in the session transcripts. It could not have fired — the corpus asks about
+doctrine and names no files, and the gate only has a handle on path-shaped
+claims. So whatever these two runs measure, it is not the gate.
+
+What it measures is visible in a transcript. Asked one of the cases, `omp` read
+two skills, then ran
+
+```
+rg -l "若見邪見是邪見" /home/user
+```
+
+then searched the web, then read `https://agama.buddhason.org/MA/MA189.htm`,
+and answered from the page it had just fetched. It passed by *retrieving the
+referent* rather than by being careful about names.
+
+That reframes run 2. The fabricate-or-refuse tradeoff holds when retrieval is
+unavailable, and in run 2 it was: `search.zig` calls the raw API with no tools,
+so every answer came from memory and the only choices were to assert or to
+decline. With tools the session has a third option, and it takes it. The gate
+is the floor for the case where a session talks about something it never
+opened; retrieval is the ceiling.
+
+The comparison is weaker than it looks and should be read as suggestive only:
+7 cases once each against 21 attempts per technique, and the two are not the
+same instrument — run 2 varied the system message, run 3 varied the whole
+harness. What is solid is the mechanism in the transcript, not the score.
+
+## Run 4 — the gate extended past file names
+
+Run 3's gate had a handle only on path-shaped claims, which is why it could not
+fire on this corpus. It now keeps the text every tool returned and checks
+quotations against it, so a passage quoted as a source's words and never
+retrieved is caught whatever the source is.
+
+Asked `zhengsiwei-rendering` in a session whose only tool was `glob` — so
+nothing could be retrieved — the model quoted 「欲念、恚念、害念」 as scripture,
+the gate refused, and the answer came back with each row of its table marked
+`记忆，本会话未核` or `已回取`. The same run with retrieval available and used
+does not fire, because the text is then in the ledger.
+
+The two halves ask for different things, and that is deliberate: a file on this
+machine is cheap to open, so the gate asks for the read; a quotation may need a
+fetch that is slow or impossible, so it asks only for honest attribution. The
+rule under both is the same one, and it is the rule the whole directory is
+about — do not let something merely associated with a source be presented as
+that source's.
+
+## The tradeoff, which is the actual result
+
+`recall-check` ("say when you do not recall, do not reconstruct") is the only
+technique that is reliable on the fabrication case — and it is the **worst** in
+run 1, at 13/21. Reading its twelve answers shows why: most of them decline to
+answer at all. It does not produce 正見; it produces silence, which is safe on a
+question about wording and useless on a question about content.
+
+The two techniques written to encourage precision —
+`term-as-binding` (「一个术语的含义是它的定义」) and `canonical-first`
+(「先给出经论中的定说」) — are the two lowest here. The mechanism is not
+established by this run, but the point of each is to push the model toward
+producing the authoritative-sounding form, and the authoritative-sounding form
+is exactly what was fabricated. `cite-then-answer` tests the obvious fix — cite
+first, then answer anyway — and lands at 7/12, between `recall-check` and the
+baseline: the clause that relieves the pressure to cite is the clause that
+restores the fabrication.
+
+So the honest summary of the search is that prompting moves the answer along a
+line between fabricating and refusing, and no point on that line is both. That
+is the same finding as the rest of this repository's work on the subject: a
+system message is a prior over the output, and a prior is not a check.
+
+## Limits
+
+- The judge is the same model as the answerer. It is given the rubric and not
+  the sutra text, so it cannot catch a mistake the rubric does not name and
+  both models share. Giving it the passage is the obvious next improvement.
+- Seven cases, one language, thinking disabled. `--thinking` is untested here.
+- The rubrics were rewritten once, after run 1 showed the first version was
+  measuring recall rather than the view: it failed answers describing 世俗正見
+  as belief in karma and rebirth, which is what 雜阿含經 784 says.
+- `sources.dj` records what could not be retrieved. The three items named in the
+  original brief as 「出離思惟／無恚思惟／無害思惟」 were not found in any
+  Chinese recension, and that absence is a result, not a gap.
+
+## Re-running
+
+```sh
+zig build judge -- <request.json> --beta
+zig build search -- --corpus src/research/zhengjian/corpus.json \
+    --techniques src/research/zhengjian/techniques.json \
+    --trials 3 --temperature 1.0 --out out.json
+zig build search -- --only zhengsiwei-rendering --trials 12 --temperature 1.0 --out out.json
+```
+
+`--only` exists so the case that separates the techniques can be sampled harder
+than the ones they all pass. Every judgement is written to `--work`
+(`zig-out/zhengjian/` by default) as `<technique>-<case>-<trial>.json`, so any
+verdict in a run can be re-derived by hand.

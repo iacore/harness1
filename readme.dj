@@ -4,3 +4,5 @@ handmade: it's too complicated to express my thoughts to agents than to code it 
 
 notes: `src/research/deepseek-flash-non-thinking.dj` (what `deepseek-flash` does with thinking disabled, measured; re-run with `src/research/flash_probe.py`)
 
+notes: `src/research/zhengjian/findings.dj` (whether a system message can make the model stop passing off unattested wording as scripture — it cannot; the instruments and the sutra citations are beside it; re-run with `zig build search`)
+

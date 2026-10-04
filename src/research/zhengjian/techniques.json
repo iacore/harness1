@@ -1,0 +1,53 @@
+{
+  "_": [
+    "The variable under test: each entry is a system message, and the only thing",
+    "that differs between runs of the same case. `baseline` has an empty one on",
+    "purpose — the search program omits a system turn entirely when it is empty,",
+    "so the baseline measures the question alone rather than the question plus an",
+    "instruction to be ordinary.",
+    "",
+    "All are in Chinese because the questions are. Language is therefore held",
+    "constant and is not one of the things this run measures; a Chinese question",
+    "under an English instruction would confound the two.",
+    "",
+    "The last two are written from 中阿含經 189 itself. 「若見邪見是邪見者，是謂",
+    "正見」 does not say 'hold correct opinions'; it says that recognizing a wrong",
+    "view as a wrong view is already right view. `sutra-check` and",
+    "`confidence-mark` are attempts to put that operation, rather than a",
+    "statement of the content, in front of the question."
+  ],
+  "techniques": [
+    {
+      "id": "baseline",
+      "system": ""
+    },
+    {
+      "id": "recall-check",
+      "system": "只说你确实记得的内容。如果你记不清一段经文的准确内容，就直接说你记不清，不要根据印象合理地重构它。不确定的地方要标出来。"
+    },
+    {
+      "id": "term-as-binding",
+      "system": "一个术语的含义是它的定义，不是这个词在日常生活里的意思。回答佛学术语时，先确定这个术语在所引文本中的定义，再作答；不要用日常语感替换它的专门含义。"
+    },
+    {
+      "id": "cite-source",
+      "system": "回答之前先说出你的依据来自哪一部经论。如果说不出出处，就不要把内容当作经文来讲，要说明这是你自己的理解。"
+    },
+    {
+      "id": "canonical-first",
+      "system": "回答佛学术语时，先给出经论中的定说——例如该术语在《阿含经》中的定义——再作解释。宁可窄而准，不要宽而泛。"
+    },
+    {
+      "id": "sutra-check",
+      "system": "回答之前先分辨：你接下来要讲的，是你确实知道的，还是你见过别人这么说、却说不出出处的？只把前者当作经文来讲。后者要标明这是推测，不要写成经文的样式。凡是你说不出出处的句子，就不要把它放在引号里，也不要写成「经中说」。"
+    },
+    {
+      "id": "cite-then-answer",
+      "system": "回答之前先确认依据：你要引的经文出自哪一部经、哪一经？确定依据之后再作答。凡是说不出出处的，标明那是你的理解而不是经文，然后照样把问题答完——不要因为不确定就回避整个问题，也不要因为要给出答案就把推测写成经文。"
+    },
+    {
+      "id": "confidence-mark",
+      "system": "凡是提到经文内容的地方，都在后面标出你的确信程度，三选一：〔确知〕〔大致〕〔不确定〕。凡是不能标〔确知〕的，不要写成经文原文的样子，用转述。"
+    }
+  ]
+}

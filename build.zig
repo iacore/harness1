@@ -69,6 +69,56 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // The 正見/正思惟 experiment under src/research/zhengjian. Like the
+    // playground, these are scratch programs: neither installed nor built by
+    // the default step, which stays off the network.
+    //
+    // `judge` is one program and not a library on purpose — see its header.
+    const judge_exe = b.addExecutable(.{
+        .name = "zhengjian_judger",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/research/zhengjian/judger.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness1", .module = mod },
+            },
+        }),
+    });
+
+    const judge_step = b.step("judge", "Judge one answer against a rubric");
+    const run_judge = b.addRunArtifact(judge_exe);
+    run_judge.addPassthruArgs();
+    run_judge.setCwd(b.path("."));
+    run_judge.setEnvironmentVariable("HARNESS1_INSTALL_ROOT", "zig-out");
+    run_judge.step.dependOn(&credentials.step);
+    judge_step.dependOn(&run_judge.step);
+
+    const search_exe = b.addExecutable(.{
+        .name = "zhengjian_search",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/research/zhengjian/search.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness1", .module = mod },
+            },
+        }),
+    });
+
+    // The searcher is started with the judge's path already filled in, so the
+    // two are built and wired by the same step rather than by whoever
+    // remembers to pass `--judger`.
+    const search_step = b.step("search", "Search prompting techniques against the corpus");
+    const run_search = b.addRunArtifact(search_exe);
+    run_search.addArg("--judger");
+    run_search.addArtifactArg(judge_exe);
+    run_search.addPassthruArgs();
+    run_search.setCwd(b.path("."));
+    run_search.setEnvironmentVariable("HARNESS1_INSTALL_ROOT", "zig-out");
+    run_search.step.dependOn(&credentials.step);
+    search_step.dependOn(&run_search.step);
+
     // One test executable per module, since a test binary only collects the
     // files one root module reaches.
     const mod_tests = b.addTest(.{ .root_module = mod });
