@@ -1,0 +1,15 @@
+{
+  // The ty extension (astral-sh.ty) is the Python language server here. It
+  // turns the Python extension's own server off by default, so there is
+  // nothing else to disable; `zig build check_python` runs the same `ty check`.
+  "ty.importStrategy": "fromEnvironment",
+
+  // Report on the whole workspace rather than only the open file. The repo is
+  // small enough that the extra analysis costs nothing noticeable.
+  "ty.diagnosticMode": "workspace"
+
+  // To keep Pylance for completion and hover and use ty only for checking,
+  // drop the two settings above and use these instead:
+  // "python.languageServer": "Pylance",
+  // "ty.disableLanguageServices": true
+}
