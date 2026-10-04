@@ -6,3 +6,5 @@ notes: `src/research/deepseek-flash-non-thinking.dj` (what `deepseek-flash` does
 
 notes: `src/research/zhengjian/findings.dj` (whether a system message can make the model stop passing off unattested wording as scripture — it cannot; the instruments and the sutra citations are beside it; re-run with `zig build search`)
 
+notes: `src/remote/lithos_models.md` (what each LithosAI model does with `reasoning_effort: none` and the sampling band the Kimi-K3 ids enforce — measured; re-run with `zig build lithos_probe`, refresh the roster with `zig build lithos_models`)
+

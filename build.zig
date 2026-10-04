@@ -17,8 +17,8 @@ pub fn build(b: *std.Build) void {
     // SQL, and of libc with it.
     //
     // It is not installed to `bin` because it is not a program — the harness
-    // runs it through `python3`. src/env/omp.zig looks for exactly this path
-    // under the install root, so the two have to agree.
+    // runs it through `python3`. src/remote/keys.zig looks for exactly this
+    // path under the install root, so the two have to agree.
     const credentials = b.addInstallFileWithDir(
         b.path("src/credentials.py"),
         .lib,
@@ -118,6 +118,53 @@ pub fn build(b: *std.Build) void {
     run_search.setEnvironmentVariable("HARNESS1_INSTALL_ROOT", "zig-out");
     run_search.step.dependOn(&credentials.step);
     search_step.dependOn(&run_search.step);
+
+    // The LithosAI roster generator. A scratch program like the playground:
+    // it needs a key and a network, so it is not installed and not built by
+    // the default step. It rewrites src/remote/lithos_models.zig in place,
+    // which the default build then compiles as ordinary source — that is what
+    // keeps installation independent of generation.
+    const lithos_models_exe = b.addExecutable(.{
+        .name = "lithos_models_gen",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/research/lithos_models_gen.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness1", .module = mod },
+            },
+        }),
+    });
+
+    const lithos_models_step = b.step("lithos_models", "Regenerate src/remote/lithos_models.zig from GET /v1/models");
+    const run_lithos_models = b.addRunArtifact(lithos_models_exe);
+    run_lithos_models.addPassthruArgs();
+    run_lithos_models.setCwd(b.path("."));
+    run_lithos_models.setEnvironmentVariable("HARNESS1_INSTALL_ROOT", "zig-out");
+    run_lithos_models.step.dependOn(&credentials.step);
+    lithos_models_step.dependOn(&run_lithos_models.step);
+
+    // The per-model constraint probe. Scratch too: it prints what each roster
+    // model does with the off switch and a mid-band top_p.
+    const lithos_probe_exe = b.addExecutable(.{
+        .name = "lithos_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/research/lithos_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness1", .module = mod },
+            },
+        }),
+    });
+
+    const lithos_probe_step = b.step("lithos_probe", "Probe the per-model constraints of the LithosAI roster");
+    const run_lithos_probe = b.addRunArtifact(lithos_probe_exe);
+    run_lithos_probe.addPassthruArgs();
+    run_lithos_probe.setCwd(b.path("."));
+    run_lithos_probe.setEnvironmentVariable("HARNESS1_INSTALL_ROOT", "zig-out");
+    run_lithos_probe.step.dependOn(&credentials.step);
+    lithos_probe_step.dependOn(&run_lithos_probe.step);
 
     // One test executable per module, since a test binary only collects the
     // files one root module reaches.

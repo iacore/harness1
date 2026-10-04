@@ -1,0 +1,129 @@
+# LithosAI model constraints
+
+What each model on the LithosAI roster does with the request fields the wire
+format leaves open. Nothing here is in the client's types or validation — the
+client checks only the bounds the vendor's OpenAPI reference states for every
+request, and per-model behaviour is data, measured and written down here.
+
+Roster rows: `GET /v1/models` publishes only `{id, object, created, owned_by}` —
+no limits, tariffs or capabilities. So every constraint below comes from one of
+three places, and each entry says which:
+
+- **wire** — the vendor's OpenAPI reference (`docs.lithosai.com/openapi.yaml`,
+  `info.version` 2026-09-17), the request schema's own field descriptions.
+- **live** — measured against `api.lithosai.cloud` by `zig build lithos_probe`
+  (section "Probe" below), on 2026-10-04.
+- **console** — the vendor's Models page, as transcribed by the sibling
+  `omp-custom` repo (`packages/catalog/src/compat/rules/providers/lithosai.kdl`),
+  not re-verified by this harness.
+
+Re-run `zig build lithos_probe` to refresh the **live** column. When a line
+changes, update this file — the probe prints; it does not assert.
+
+## Wire facts (every model)
+
+- **Thinking control.** One field, `reasoning_effort`, takes two shapes:
+  - a named effort: `none | minimal | low | medium | high | xhigh | max`;
+  - a float budget in `[0, 0.99]`.
+
+  Both are accepted for every roster model (**live**). An unknown string, or a
+  budget above 0.99, is refused with HTTP 400 in the **engine** error shape,
+  e.g. `reasoning_effort.constrained-float: Input should be less than or equal
+  to 0.99`. `none` is the off switch, not a rung of the ladder.
+- **Reasoning output.** `reasoning_content` on the message (and the streamed
+  delta), and `completion_tokens_details.reasoning_tokens` in `usage`. Whether
+  `none` actually empties them is per-model — see the table.
+- **Errors** come in two shapes: the API's own `{error:{message,type,param,code}}`
+  (e.g. an unknown model, or `n` on Kimi) and the inference engine's raw
+  `{object:"error",message,type,param,code:<integer>}` passthrough (e.g. a
+  rejected `top_p`). A body that is neither is plain text. `APIError.form`
+  carries which one arrived.
+- **Not implemented**: `/completions`, `/embeddings`, `/responses`, `/batches`
+  answer 404.
+
+## Per-model (live, 2026-10-04)
+
+`none` = does `reasoning_effort: "none"` switch thinking off (empty
+`reasoning_content`, `reasoning_tokens` 0)? `top_p 0.5` = does the model accept
+a `top_p` outside the OpenAI default band?
+
+| model | `none` off? | `top_p 0.5` | notes |
+| --- | --- | --- | --- |
+| `deepseek-ai/DeepSeek-V4.1-Flash` | yes | accepted | |
+| `deepseek-ai/DeepSeek-V4.1-Flash-fast` | yes | accepted | |
+| `deepseek-ai/DeepSeek-V4.1-Flash-ultra` | yes | accepted | |
+| `deepseek-ai/DeepSeek-V4.1-Flash-ultra-chat` | yes | accepted | `completion_tokens_details` is `null` |
+| `zai-org/GLM-5.3` | **no** | accepted | ignores `none`; thinks anyway |
+| `zai-org/GLM-5.3-Flash` | **no** | accepted | ignores `none`; thinks anyway |
+| `zai-org/GLM-5.3-Flash-ultra` | **no** | accepted | ignores `none`; thinks anyway |
+| `zai-org/GLM-5.3-Flash-ultra-chat` | **no** | accepted | ignores `none`; thinks anyway |
+| `zai-org/GLM-5.3-ultra-chat` | **no** | accepted | ignores `none`; thinks anyway |
+| `moonshotai/Kimi-K3` | yes | **refused 400** | |
+| `moonshotai/Kimi-K3-fast` | yes | **refused 400** | |
+| `moonshotai/Kimi-K3-ultra` | yes | **refused 400** | |
+| `moonshotai/Kimi-K3-ultra-chat` | yes | accepted | `completion_tokens_details` is `null`; does not enforce the band |
+
+### GLM-5.3 family — `reasoning_effort: "none"` is ignored (**live**)
+
+Every GLM-5.3 deployment ignores the off switch: the API answers 200, no error,
+with a non-empty `reasoning_content` and `reasoning_tokens` above zero. Asking
+it not to think does not stop it. The DeepSeek and Kimi families honour `none`.
+
+One run suggests the GLM ladder is not DeepSeek's: `low` emptied
+`reasoning_content` (`reasoning_tokens` 1) while `none` produced the longest
+trace. Not characterised further — one observation, not a rule.
+
+### Kimi-K3 family — sampling is constrained (**wire**, **live**)
+
+The OpenAPI request schema names three constraints, attributed to "prod-flagged
+Kimi-K3 engines":
+
+- `top_p` must be in `[0.95, 1.0]`. A lower value is refused with HTTP 400 in
+  the **engine** shape: `top_p must be between 0.95 and 1.0 for this model; got
+  0.5`.
+- `n` must be `1`. `n: 2` is refused with the API's own envelope and
+  `code: "unsupported_n"`, message `n must be 1`.
+- `presence_penalty` and `frequency_penalty` must be `0.0`. A nonzero value is
+  refused with an **engine** error: `presence_penalty must be 0.0 for this
+  model; got 1.0`.
+
+`moonshotai/Kimi-K3-ultra-chat` accepted `top_p: 0.5` (**live**), so whatever
+"prod-flagged" selects does not include every Kimi id. The other three Kimi ids
+enforce it.
+
+## Limits and cost (**console**)
+
+From the vendor's Models page via `omp-custom`; not re-verified here. Every row
+is `context-window` 1,048,576 and `max-tokens` 1,048,576 — the output cap is the
+context window, not DeepSeek's published 384K. The endpoint accepts any
+`max_tokens` that fits (1,048,000 succeeded; 1,048,576 was rejected as exceeding
+the window), so a request must bound output below the window itself.
+
+Cost per million tokens (input / cache-read / output):
+
+| model | input | cache-read | output |
+| --- | --- | --- | --- |
+| `deepseek-ai/DeepSeek-V4.1-Flash` | 0.15 | 0.003 | 0.60 |
+| `deepseek-ai/DeepSeek-V4.1-Flash-fast` | 0.25 | 0.005 | 1.00 |
+| `deepseek-ai/DeepSeek-V4.1-Flash-ultra` | 0.35 | 0.007 | 1.40 |
+| `deepseek-ai/DeepSeek-V4.1-Flash-ultra-chat` | 0.35 | 0.007 | 1.40 |
+| `zai-org/GLM-5.3` | 1.05 | 0.195 | 3.30 |
+| `zai-org/GLM-5.3-Flash` | 0.30 | 0.06 | 1.00 |
+| `zai-org/GLM-5.3-Flash-ultra` | 0.30 | 0.06 | 1.00 |
+| `zai-org/GLM-5.3-Flash-ultra-chat` | 0.30 | 0.06 | 1.00 |
+| `zai-org/GLM-5.3-ultra-chat` | 2.10 | 0.39 | 6.60 |
+| `moonshotai/Kimi-K3` | 2.40 | 0.24 | 12.00 |
+| `moonshotai/Kimi-K3-fast` | 4.00 | 0.40 | 20.00 |
+| `moonshotai/Kimi-K3-ultra` | 5.60 | 0.56 | 28.00 |
+| `moonshotai/Kimi-K3-ultra-chat` | 5.60 | 0.56 | 28.00 |
+
+## Probe
+
+`zig build lithos_probe` sends each roster model two requests — `reasoning_effort:
+"none"` and `top_p: 0.5` — and prints `reasoning_tokens`, whether
+`reasoning_content` was non-empty, the answer length and the finish reason. It is
+a scratch program (`src/research/lithos_probe.zig`), neither installed nor built
+by the default step.
+
+The adapter itself (`src/remote/lithos.zig`) checks only the wire bounds every
+request shares; the per-model rows above are deliberately not encoded there.

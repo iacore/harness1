@@ -24,6 +24,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const testing = std.testing;
 
 /// Where omp keeps the credentials it authenticates providers with, relative
 /// to the home directory.
@@ -40,9 +41,6 @@ const helper_path = "lib/harness1/credentials.py";
 /// inside.
 pub const install_root_var = "HARNESS1_INSTALL_ROOT";
 
-/// A provider this harness can authenticate with: the name omp's store lists
-/// it under, and the environment variable that takes precedence over the
-/// stored key.
 pub const Provider = struct {
     /// The `provider` column of `auth_credentials`.
     store_name: []const u8,
@@ -53,6 +51,11 @@ pub const Provider = struct {
     pub const deepseek: Provider = .{
         .store_name = "deepseek",
         .env_var = "DEEPSEEK_API_KEY",
+    };
+
+    pub const lithosai: Provider = .{
+        .store_name = "lithosai",
+        .env_var = "LITHOSAI_API_KEY",
     };
 };
 
@@ -151,6 +154,48 @@ fn helperPath(
     return std.fs.path.join(allocator, &.{ executable_dir, "..", helper_path });
 }
 
-test {
-    _ = @import("omp_test.zig");
+// Tests: only the half that needs no store — reading the environment
+// variable. A store built here would pin this file's idea of omp's schema
+// rather than omp's — the same column and field names the module reads,
+// written twice from the same head, where agreement proves nothing. The store
+// half is checked by running the playground against the real one.
+
+const deepseek = Provider.deepseek;
+
+/// A home directory that is not there, so that the store cannot be opened and
+/// whatever the lookup returns came from the environment.
+const no_home = "/nonexistent/harness1-test-home";
+
+test "the environment variable is the key when it is set" {
+    const allocator = testing.allocator;
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+    try environ.put("DEEPSEEK_API_KEY", "sk-from-environment");
+    try environ.put("HOME", no_home);
+
+    const key = (try apiKey(allocator, testing.io, &environ, deepseek)) orelse
+        return error.ExpectedKey;
+    // The key is the caller's, not the environment's own storage: freeing it
+    // must leave the map holding what it held.
+    defer allocator.free(key);
+    try testing.expectEqualStrings("sk-from-environment", key);
+    try testing.expectEqualStrings("sk-from-environment", environ.get("DEEPSEEK_API_KEY").?);
+}
+
+test "an empty environment variable is not a key" {
+    const allocator = testing.allocator;
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+    try environ.put("DEEPSEEK_API_KEY", "");
+    try environ.put("HOME", no_home);
+
+    try testing.expectEqual(null, try apiKey(allocator, testing.io, &environ, deepseek));
+}
+
+test "neither a variable nor a home directory is null rather than an error" {
+    const allocator = testing.allocator;
+    var environ = std.process.Environ.Map.init(allocator);
+    defer environ.deinit();
+
+    try testing.expectEqual(null, try apiKey(allocator, testing.io, &environ, deepseek));
 }

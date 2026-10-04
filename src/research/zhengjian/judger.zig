@@ -34,7 +34,7 @@ const std = @import("std");
 const Io = std.Io;
 const harness1 = @import("harness1");
 const deepseek = harness1.deepseek;
-const omp = harness1.omp;
+const keys = harness1.keys;
 const chat = deepseek.chat;
 
 /// The name the forced tool is declared and chosen under.
@@ -166,7 +166,7 @@ pub fn main(init: std.process.Init) !void {
     defer parsed.deinit();
     const request = parsed.value;
 
-    const api_key = try omp.apiKey(arena, io, init.environ_map, omp.Provider.deepseek) orelse {
+    const api_key = try keys.apiKey(arena, io, init.environ_map, keys.Provider.deepseek) orelse {
         try out.writeAll("no DeepSeek key: set DEEPSEEK_API_KEY, or sign in to the `deepseek` provider of omp\n");
         try out.flush();
         std.process.exit(Exit.request_failed);
