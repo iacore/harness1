@@ -175,7 +175,7 @@ const TestServer = struct {
     fn reply(self: *TestServer, request: *http.Server.Request, buffer: []u8) !void {
         const canned = self.replies[self.recorded.items.len - 1];
         var options: http.Server.Request.RespondOptions = .{
-            .status = @enumFromInt(canned.status),
+            .status = @fromBackingInt(@intCast(canned.status)),
             .keep_alive = false,
         };
         if (canned.content_type) |content_type| {
@@ -292,6 +292,14 @@ test "the documented chat request body" {
     var client = try testClient(gpa, &server, true);
     defer client.deinit();
 
+    // The schema the reference page writes as JSON, as Zig values. `required`
+    // and `additionalProperties` are not fields of `StrictSchema`: strict mode
+    // reads both off the property names and off the mode, so the encoder
+    // writes them, and `parameters` below is what they come to.
+    const schema: chat.StrictSchema = .{
+        .type = .object,
+        .properties = &.{.{ .name = "city", .schema = .{ .type = .string } }},
+    };
     const parameters =
         \\{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}
     ;
@@ -303,8 +311,7 @@ test "the documented chat request body" {
         .function = .{
             .name = "get_weather",
             .description = "Get the weather.",
-            .parameters = .{ .text = parameters },
-            .strict = true,
+            .parameters = .{ .strict = schema },
         },
     }};
     const completion = try sendChat(&client, &.{
@@ -337,6 +344,162 @@ test "the documented chat request body" {
     });
     defer gpa.free(want);
     try testing.expectEqualStrings(want, recorded.body);
+}
+
+// Strict and not-strict are two modes over a schema, so each has its own
+// shape on the wire: `strict` rides beside the schema in the mode that asks
+// for checking, and a schema alone is what the server takes on trust. The
+// same object written in both modes differs by exactly those two keywords,
+// which `StrictSchema` writes from the property names and `Schema` takes from
+// the caller. A function that takes nothing sends neither.
+test "a tool's parameters carry their mode" {
+    const gpa = testing.allocator;
+    const schema_json =
+        \\{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false}
+    ;
+
+    const strict = try json_encoder.stringify(gpa, chat.Tool{
+        .function = .{
+            .name = "get_weather",
+            .parameters = .{ .strict = .{
+                .type = .object,
+                .properties = &.{.{ .name = "city", .schema = .{ .type = .string } }},
+            } },
+        },
+    });
+    defer gpa.free(strict);
+
+    const trusting = try json_encoder.stringify(gpa, chat.Tool{
+        .function = .{
+            .name = "get_weather",
+            .parameters = .{ .not_strict = .{
+                .type = .object,
+                .properties = &.{.{ .name = "city", .schema = .{ .type = .string } }},
+                .required = &.{"city"},
+                .additional_properties = false,
+            } },
+        },
+    });
+    defer gpa.free(trusting);
+
+    const bare = try json_encoder.stringify(gpa, chat.Tool{
+        .function = .{ .name = "get_weather" },
+    });
+    defer gpa.free(bare);
+
+    const want_strict = try std.mem.concat(gpa, u8, &.{
+        \\{"type":"function","function":{"name":"get_weather","parameters":
+        ,
+        schema_json,
+        \\,"strict":true}}
+    });
+    defer gpa.free(want_strict);
+    try testing.expectEqualStrings(want_strict, strict);
+
+    const want_trusting = try std.mem.concat(gpa, u8, &.{
+        \\{"type":"function","function":{"name":"get_weather","parameters":
+        ,
+        schema_json,
+        \\}}
+    });
+    defer gpa.free(want_trusting);
+    try testing.expectEqualStrings(want_trusting, trusting);
+
+    try testing.expectEqualStrings(
+        \\{"type":"function","function":{"name":"get_weather"}}
+    , bare);
+}
+
+// Every keyword of the documented subset, written as Zig values: the shapes
+// under one object, an array with its items, an enum beside a type, an anyOf
+// instead of one, a `$ref` into `$def`, and the string and number keywords.
+test "a schema writes the keywords the API documents" {
+    const gpa = testing.allocator;
+    const schema: chat.Schema = .{
+        .description = "A report.",
+        .type = .object,
+        .properties = &.{
+            .{ .name = "count", .schema = .{
+                .type = .integer,
+                .const_value = .{ .integer = 3 },
+                .default = .{ .integer = 3 },
+                .minimum = 1,
+                .maximum = 10,
+                .exclusive_minimum = 0,
+                .exclusive_maximum = 11,
+                .multiple_of = 2,
+            } },
+            .{ .name = "status", .schema = .{
+                .type = .string,
+                .enumeration = &.{ .{ .string = "pending" }, .{ .string = "shipped" } },
+            } },
+            .{ .name = "email", .schema = .{
+                .type = .string,
+                .pattern = "^[0-9]{11}$",
+                .format = .email,
+            } },
+            .{ .name = "author", .schema = .{ .ref = "#/$def/author" } },
+            .{ .name = "account", .schema = .{ .any_of = &.{
+                .{ .type = .string, .format = .email },
+                .{ .type = .string, .pattern = "^[0-9]{11}$" },
+            } } },
+            .{ .name = "tags", .schema = .{ .type = .array, .items = &.{ .type = .string } } },
+            .{ .name = "flag", .schema = .{ .type = .boolean } },
+        },
+        .required = &.{"count"},
+        .additional_properties = false,
+        .defs = &.{.{ .name = "author", .schema = .{
+            .type = .object,
+            .properties = &.{.{ .name = "name", .schema = .{ .type = .string } }},
+        } }},
+    };
+    const body = try json_encoder.stringify(gpa, schema);
+    defer gpa.free(body);
+    try testing.expectEqualStrings(
+        \\{"$def":{"author":{"type":"object","properties":{"name":{"type":"string"}}}},"description":"A report.","type":"object","properties":{"count":{"type":"integer","const":3,"default":3,"minimum":1,"maximum":10,"exclusiveMinimum":0,"exclusiveMaximum":11,"multipleOf":2},"status":{"type":"string","enum":["pending","shipped"]},"email":{"type":"string","pattern":"^[0-9]{11}$","format":"email"},"author":{"$ref":"#/$def/author"},"account":{"anyOf":[{"type":"string","format":"email"},{"type":"string","pattern":"^[0-9]{11}$"}]},"tags":{"type":"array","items":{"type":"string"}},"flag":{"type":"boolean"}},"required":["count"],"additionalProperties":false}
+    , body);
+}
+
+// Strict mode is one of the two features the plain root refuses. The refusal
+// is about the mode, and it happens before a request is built, so nothing
+// reaches the wire.
+test "a strict tool needs the Beta root" {
+    const gpa = testing.allocator;
+    const replies = [_]Reply{.{ .parts = &.{
+        \\{"id":"x","choices":[]}
+    } }};
+    var server = try TestServer.init(gpa, testing.io, &replies);
+    defer server.deinit();
+    try server.start();
+
+    var client = try testClient(gpa, &server, false);
+    defer client.deinit();
+
+    const messages = [_]chat.Message{.{ .user = .{ .content = chat.text("hi") } }};
+    const strict = [_]chat.Tool{.{
+        .function = .{ .name = "f", .parameters = .{ .strict = .{ .type = .object } } },
+    }};
+    const trusting = [_]chat.Tool{.{
+        .function = .{ .name = "f", .parameters = .{ .not_strict = .{ .type = .object } } },
+    }};
+
+    const refused = try chat.send(&client, &.{
+        .model = deepseek.Model.flash,
+        .messages = &messages,
+        .tools = &strict,
+    });
+    _ = try expectFailure(refused, .strict_tools_require_beta);
+
+    // The same schema in the other mode asks for no checking, so it goes out.
+    const completion = try sendChat(&client, &.{
+        .model = deepseek.Model.flash,
+        .messages = &messages,
+        .tools = &trusting,
+    });
+    defer completion.deinit();
+    server.finish();
+    try server.expectNoFailures();
+    try testing.expectEqual(1, server.recorded.items.len);
 }
 
 // The reference page documents every parameter but `model` and `messages` as
@@ -710,17 +873,13 @@ test "the documented chat stream" {
 // field that is not optional does not decode a `null` at all, default or no
 // default, so the whole chunk it is in fails rather than reading as empty.
 test "text the API sent as null decodes as nothing" {
-    const message = try std.json.parseFromSliceLeaky(
-        chat.GeneratedMessage,
-        testing.allocator,
+    const message = try std.json.parseFromSliceLeaky(chat.GeneratedMessage, testing.allocator,
         \\{"role":"assistant","content":null,"reasoning_content":null}
     , .{});
     try testing.expectEqual(null, message.content);
     try testing.expectEqual(null, message.reasoning_content);
 
-    const delta = try std.json.parseFromSliceLeaky(
-        chat.Delta,
-        testing.allocator,
+    const delta = try std.json.parseFromSliceLeaky(chat.Delta, testing.allocator,
         \\{"content":null,"reasoning_content":"thinking"}
     , .{});
     try testing.expectEqual(null, delta.content);

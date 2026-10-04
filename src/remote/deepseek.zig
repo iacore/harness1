@@ -25,8 +25,9 @@
 //!     `ToolChoice` — are tagged unions, so combinations the API rejects are
 //!     unrepresentable rather than merely invalid, and validation covers only
 //!     what the type system cannot.
-//!   * `Function.parameters` is pre-encoded JSON Schema text, written into the
-//!     request verbatim.
+//!   * `Function.parameters` is a JSON Schema written as Zig values, and
+//!     carries the mode it was written for — strict or not — as its type, so
+//!     a schema and the checking of it cannot disagree.
 //!   * A streamed chunk is parsed into an allocator the caller passes to
 //!     `recv`; an arena reused per chunk makes the streaming loop
 //!     allocation-stable. `collect` returns a `Collected` that owns everything
@@ -590,7 +591,7 @@ pub fn newEventStream(comptime Chunk: type, response: *Response) EventStream(Chu
 /// Two features are restricted to the Beta API root and are rejected by `chat`
 /// and `chatStream` unless the client was built with `beta = true`: Chat Prefix
 /// Completion (`AssistantMessage.prefix`) and strict tool calls
-/// (`Function.strict`).
+/// (`Parameters.strict`).
 pub const chat = struct {
     /// The endpoint's path, relative to the API root.
     pub const path = "/chat/completions";
@@ -624,12 +625,32 @@ pub const chat = struct {
         pub const function = "function";
     };
 
-    /// Image detail levels accepted in an `image_url` content part.
+    /// How an `image_url` part is prepared before inference. The field is
+    /// optional and is left out of the request when null; the server then
+    /// chooses the processing itself.
+    ///
+    /// Two levels, because there are two behaviours between them. `original`
+    /// sends the image as it is; `low` downscales it to 512x512 before
+    /// inference, which is faster and cheaper and blind to detail finer than
+    /// that. A 1200x1200 image cost 879 prompt tokens as sent and 191 with
+    /// `low`.
+    ///
+    /// The API lists two more, `high` and `auto`, and neither is named here.
+    /// Neither selects a processing of its own: `high` is the OpenAI spelling
+    /// of `original`, and `auto` is what the server does with no detail
+    /// field at all, so a caller reaches both without a name for either.
+    ///
+    /// The field is read for `image_url` parts, data URL and http(s) URL
+    /// alike; on a `File` part the image is already fixed by its `file_id`,
+    /// and the documented behaviour is to ignore it.
+    ///
+    /// https://api-docs.deepseek.com/guides/vision/#detail-level
     pub const ImageDetail = enum {
+        /// Downscaled to 512x512 before inference: fastest and cheapest, and
+        /// blind to detail finer than that.
         low,
-        high,
+        /// The image as sent.
         original,
-        auto,
     };
 
     /// Documented request limits.
@@ -786,6 +807,11 @@ pub const chat = struct {
     /// the tool calls it requested, and the chain of thought behind them.
     pub const AssistantMessage = struct {
         /// The answer text; the empty text when the turn only calls tools.
+        ///
+        /// note: nothing frees it. The default is a string literal, so it
+        /// carries no allocation to release; a text that came out of a
+        /// response borrows that response instead. Only a caller that put its
+        /// own allocation here owns one, and only that caller frees it.
         content: Content = .{ .text = "" },
 
         /// The calls the model requested in this turn.
@@ -842,24 +868,325 @@ pub const chat = struct {
 
         description: ?[]const u8 = null,
 
-        /// A JSON Schema object, already encoded as JSON text and written into
-        /// the request verbatim. Leaving it null declares an empty parameter
-        /// list.
-        parameters: ?json_encoder.Raw = null,
+        /// The arguments the function takes, in the one of the two modes the
+        /// schema is written for, or nothing at all. Omitting it declares an
+        /// empty parameter list.
+        parameters: ?Parameters = null,
 
-        /// Enables Beta strict mode: the arguments must validate against
-        /// `parameters`, which must set additionalProperties to false and list
-        /// every property as required. Needs the Beta API root.
-        strict: ?bool = null,
-
-        pub const json = .{
-            .fields = .{
-                .description = .{ .skip_if_empty = true },
-                .parameters = .{ .skip_if_empty = true },
-                .strict = .{ .skip_if_false = true },
-            },
-        };
+        pub const json = .{ .encode = encodeFunction };
     };
+
+    /// The parameters of a function, and whether the server checks that the
+    /// arguments conform to them.
+    ///
+    /// The API carries this as two fields, `strict` beside `parameters`, which
+    /// makes two combinations expressible that mean nothing: strict mode over
+    /// a schema strict mode would refuse, and a schema only strict mode could
+    /// accept, asked for without it. Here the mode is the variant and each
+    /// variant is its own type, so neither combination can be built.
+    pub const Parameters = union(enum) {
+        /// A schema the server enforces. The documented rule is the Beta API
+        /// root, which this client keeps; the endpoint served the same tool on
+        /// the plain root too, so the restriction is not one it checks.
+        strict: StrictSchema,
+
+        /// A schema the server takes on trust.
+        not_strict: Schema,
+    };
+
+    /// A JSON Schema object for a function's arguments, written as Zig values.
+    /// The server passes the arguments through; it does not check them against
+    /// this.
+    ///
+    /// It carries the keywords the API documents, and no others: `type` and
+    /// the shapes under it, `properties`, `items`, `enum`, `anyOf`, `$ref`
+    /// with `$def`, and the per-type keywords below. What it has over
+    /// `StrictSchema` is `required` and `additionalProperties`, which the
+    /// server reads for itself in strict mode and which are the caller's to
+    /// say here.
+    pub const Schema = struct {
+        /// `$def`: schemas under a name, for `$ref` to point at.
+        defs: ?[]const Named(Schema) = null,
+
+        /// `$ref`, e.g. "#/$def/author".
+        ref: ?[]const u8 = null,
+
+        description: ?[]const u8 = null,
+
+        type: ?Type = null,
+
+        /// One schema per property, under the property's name.
+        properties: ?[]const Named(Schema) = null,
+
+        /// The properties an argument object must carry.
+        required: ?[]const []const u8 = null,
+
+        /// Whether an argument property outside `properties` is allowed.
+        additional_properties: ?bool = null,
+
+        /// The schema each element of an array matches. Behind a pointer
+        /// because a schema holds schemas.
+        items: ?*const Schema = null,
+
+        /// `enum`: the values the argument may take. The field is not `enum`
+        /// because that is a keyword, and it is written under the key the API
+        /// reads.
+        enumeration: ?[]const Value = null,
+
+        any_of: ?[]const Schema = null,
+
+        pattern: ?[]const u8 = null,
+
+        format: ?Format = null,
+
+        const_value: ?Value = null,
+
+        default: ?Value = null,
+
+        minimum: ?f64 = null,
+
+        maximum: ?f64 = null,
+
+        exclusive_minimum: ?f64 = null,
+
+        exclusive_maximum: ?f64 = null,
+
+        multiple_of: ?f64 = null,
+
+        pub const json = .{ .encode = encodeSchema };
+    };
+
+    /// A JSON Schema the server checks the arguments against, which makes
+    /// strict mode's rules the schema's rules — and makes them this type's
+    /// shape. Every property of an object is required and nothing outside
+    /// `properties` is allowed, so there is no field for either: the encoder
+    /// writes `required` from the property names and `additionalProperties`
+    /// false wherever the schema is an object. `minLength`, `maxLength`,
+    /// `minItems` and `maxItems` are unsupported in this mode, and are not
+    /// here to be written.
+    ///
+    /// Write the rest of the schema to the rules anyway, because the endpoint
+    /// enforces them unevenly: it refused `additionalProperties` at true with
+    /// a 400, and accepted an omitted `additionalProperties`, an omitted
+    /// `required` and `minLength` on the same tool, so it does not catch the
+    /// rest.
+    ///
+    /// Beta API root only.
+    pub const StrictSchema = struct {
+        defs: ?[]const Named(StrictSchema) = null,
+
+        ref: ?[]const u8 = null,
+
+        description: ?[]const u8 = null,
+
+        type: ?Type = null,
+
+        properties: ?[]const Named(StrictSchema) = null,
+
+        items: ?*const StrictSchema = null,
+
+        enumeration: ?[]const Value = null,
+
+        any_of: ?[]const StrictSchema = null,
+
+        pattern: ?[]const u8 = null,
+
+        format: ?Format = null,
+
+        const_value: ?Value = null,
+
+        default: ?Value = null,
+
+        minimum: ?f64 = null,
+
+        maximum: ?f64 = null,
+
+        exclusive_minimum: ?f64 = null,
+
+        exclusive_maximum: ?f64 = null,
+
+        multiple_of: ?f64 = null,
+
+        pub const json = .{ .encode = encodeSchema };
+    };
+
+    /// A schema under a name: one entry of `properties` or of `$def`. Both are
+    /// written as a JSON object keyed by the name, which is what the API
+    /// reads, and not as the list of pairs they are here.
+    pub fn Named(comptime S: type) type {
+        return struct {
+            name: []const u8,
+            schema: S,
+        };
+    }
+
+    /// The `type` keyword. These are the shapes the documented subset covers.
+    pub const Type = enum { object, array, string, number, integer, boolean };
+
+    /// The `format` keyword.
+    pub const Format = enum { email, hostname, ipv4, ipv6, uuid };
+
+    /// A bare JSON value, as `enum` and `const` and `default` take.
+    pub const Value = union(enum) {
+        string: []const u8,
+        integer: i64,
+        float: f64,
+        boolean: bool,
+
+        pub const json = .{ .encode = encodeValue };
+    };
+
+    fn encodeValue(e: *json_encoder.Encoder, value: Value) json_encoder.Error!void {
+        switch (value) {
+            .string => |string| try e.string(string),
+            .integer => |integer| try e.integer(integer),
+            .float => |float| try e.float(float),
+            .boolean => |boolean| try e.boolean(boolean),
+        }
+    }
+
+    /// Writes a schema. The two types differ by `required` and
+    /// `additionalProperties`, which `Schema` takes from the caller and
+    /// `StrictSchema` derives from the property list, so one function writes
+    /// both and the field test below is the whole of the difference.
+    fn encodeSchema(e: *json_encoder.Encoder, schema: anytype) json_encoder.Error!void {
+        const S = @TypeOf(schema);
+
+        try e.beginObject();
+        try encodeNamed(e, "$def", schema.defs);
+        if (schema.ref) |reference| {
+            try e.key("$ref");
+            try e.string(reference);
+        }
+        if (schema.description) |description| {
+            try e.key("description");
+            try e.string(description);
+        }
+        if (schema.type) |shape| {
+            try e.key("type");
+            try e.string(@tagName(shape));
+        }
+        try encodeNamed(e, "properties", schema.properties);
+        if (comptime @hasField(S, "required")) {
+            if (schema.required) |required| {
+                try e.key("required");
+                try e.beginArray();
+                for (required) |name| try e.string(name);
+                try e.endArray();
+            }
+            if (schema.additional_properties) |allowed| {
+                try e.key("additionalProperties");
+                try e.boolean(allowed);
+            }
+        } else if (schema.type) |shape| {
+            // Strict mode reads every property of an object as required and
+            // refuses anything else, so both are written from `properties`.
+            if (shape == .object) {
+                try e.key("required");
+                try e.beginArray();
+                if (schema.properties) |properties| {
+                    for (properties) |property| try e.string(property.name);
+                }
+                try e.endArray();
+                try e.key("additionalProperties");
+                try e.boolean(false);
+            }
+        }
+        if (schema.items) |items| {
+            try e.key("items");
+            try encodeSchema(e, items.*);
+        }
+        if (schema.enumeration) |values| {
+            try e.key("enum");
+            try e.beginArray();
+            for (values) |value| try json_encoder.encode(e, value);
+            try e.endArray();
+        }
+        if (schema.any_of) |alternatives| {
+            try e.key("anyOf");
+            try e.beginArray();
+            for (alternatives) |alternative| try encodeSchema(e, alternative);
+            try e.endArray();
+        }
+        if (schema.pattern) |pattern| {
+            try e.key("pattern");
+            try e.string(pattern);
+        }
+        if (schema.format) |format| {
+            try e.key("format");
+            try e.string(@tagName(format));
+        }
+        if (schema.const_value) |value| {
+            try e.key("const");
+            try json_encoder.encode(e, value);
+        }
+        if (schema.default) |value| {
+            try e.key("default");
+            try json_encoder.encode(e, value);
+        }
+        if (schema.minimum) |value| {
+            try e.key("minimum");
+            try e.float(value);
+        }
+        if (schema.maximum) |value| {
+            try e.key("maximum");
+            try e.float(value);
+        }
+        if (schema.exclusive_minimum) |value| {
+            try e.key("exclusiveMinimum");
+            try e.float(value);
+        }
+        if (schema.exclusive_maximum) |value| {
+            try e.key("exclusiveMaximum");
+            try e.float(value);
+        }
+        if (schema.multiple_of) |value| {
+            try e.key("multipleOf");
+            try e.float(value);
+        }
+        return e.endObject();
+    }
+
+    /// Writes a name-keyed list of schemas, or nothing when there is none.
+    fn encodeNamed(e: *json_encoder.Encoder, key: []const u8, named: anytype) json_encoder.Error!void {
+        const list = named orelse return;
+        try e.key(key);
+        try e.beginObject();
+        for (list) |entry| {
+            try e.key(entry.name);
+            try encodeSchema(e, entry.schema);
+        }
+        try e.endObject();
+    }
+
+    /// Writes the function the way the API expects it: `parameters` when the
+    /// function takes any, and `strict` in the one mode that enforces them.
+    fn encodeFunction(e: *json_encoder.Encoder, function: Function) json_encoder.Error!void {
+        try e.beginObject();
+        try e.key("name");
+        try e.string(function.name);
+        if (function.description) |description| {
+            if (description.len != 0) {
+                try e.key("description");
+                try e.string(description);
+            }
+        }
+        if (function.parameters) |parameters| {
+            switch (parameters) {
+                .strict => |schema| {
+                    try e.key("parameters");
+                    try json_encoder.encode(e, schema);
+                    try e.key("strict");
+                    try e.boolean(true);
+                },
+                .not_strict => |schema| {
+                    try e.key("parameters");
+                    try json_encoder.encode(e, schema);
+                },
+            }
+        }
+        return e.endObject();
+    }
 
     /// A function call requested by the model; in a streamed delta it is a
     /// fragment of one, identified by `index`.
@@ -1129,7 +1456,10 @@ pub const chat = struct {
             if (beta) return null;
             if (self.tools) |tools| {
                 for (tools) |tool| {
-                    if (tool.function.strict orelse false) return .strict_tools_require_beta;
+                    if (tool.function.parameters) |parameters| switch (parameters) {
+                        .strict => return .strict_tools_require_beta,
+                        .not_strict => {},
+                    };
                 }
             }
             if (self.messages.len != 0) {
@@ -1447,6 +1777,13 @@ pub const chat = struct {
         /// Converts the generated message into an assistant turn to replay in
         /// the next request, keeping the chain of thought and the tool calls,
         /// which the API requires to be sent back on every tool-calling turn.
+        ///
+        /// note: the turn borrows this message's memory, so it is readable
+        /// only while the response it was read out of is alive. Deiniting the
+        /// `Parsed` or the `Collected` that produced this message frees the
+        /// text and the tool calls the turn points at. Nothing is copied,
+        /// because nothing in this library ever frees a message: a request is
+        /// the caller's to own.
         pub fn toAssistant(self: GeneratedMessage) AssistantMessage {
             return .{
                 .content = text(self.content orelse ""),
