@@ -76,9 +76,6 @@ const FakeServer = struct {
     fn start(self: *FakeServer) !void {
         const port = self.listener.socket.address.getPort();
         self.url = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}", .{port});
-        // The suite's premise, said where a run will show it: the client's
-        // traffic goes to this process, not to api.deepseek.com.
-        std.debug.print("[fake] deepseek_test: answering from {s}, not api.deepseek.com\n", .{self.url});
         self.thread = try std.Thread.spawn(.{}, run, .{self});
     }
 
