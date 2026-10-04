@@ -1,0 +1,42 @@
+# Feeding diagnostics to the agent
+
+Status: a thought, not a finding. Written down 2026-10-04; nothing here is
+built or observed.
+
+The harness now emits failures as structured messages: a short,
+identifier-shaped `message_id` (`keys:python_helper_unavailable`), a
+human-readable line, and its arguments, handed to a `DebugLogger`
+(`src/debug.zig`) whose sink the program chooses. Today the sink writes the
+line to the program's own stderr, and the program carries on without a key.
+
+Thought: hand these to the *agent* instead. The agent is already the thing
+driving the harness, and a diagnostic is a description of something it might
+act on. `keys:python_helper_unavailable` is "sign in, or install the helper";
+`keys:python_helper_failure` carries the helper's stderr, which is the reason
+the store refused to answer. A program that prints for a human, or aborts, has
+already decided the agent cannot deal with it.
+
+Why it seems workable:
+
+- The `message_id` is a stable key, so a handling policy is a table keyed by
+  it, with the args as data rather than prose to parse.
+- The args are exactly the context a remediation needs — the helper path, the
+  exit status, the helper's stderr.
+- The agent is present at the moment the message is produced: it is the
+  harness's caller.
+
+What is not answered, and is the whole difficulty:
+
+- Which layer decides — the harness from a fixed policy, the model, or both
+  (policy proposes, agent disposes)?
+- What happens when the handling is wrong, or needs a human (a password, a
+  credential this machine does not have)? A confident wrong remediation is
+  worse than a printed line.
+- Timing: a diagnostic is emitted mid-turn, so there is no natural point at
+  which the agent answers it. Per-message dispatch, or a batch delivered at a
+  turn boundary?
+- Does the set of `message_id`s need to be closed and enumerable, so the agent
+  can be told what it is allowed to handle? `DebugLogger` takes the id as a
+  literal string — a name, not a type, with nothing to iterate.
+
+Related: `src/debug.zig`, `src/remote/keys.zig`.
