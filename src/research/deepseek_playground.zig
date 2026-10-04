@@ -3,7 +3,7 @@
 //! src/remote/deepseek.zig, not part of the library.
 //!
 //! Run:
-//!   zig build deepseek_playground
+//!   zig build --build-file ./build.research.zig deepseek_playground
 //!
 //! Type check only:
 //!   zig build-obj --dep harness1 -Mroot=src/research/deepseek_playground.zig -Mharness1=src/root.zig -fno-emit-bin

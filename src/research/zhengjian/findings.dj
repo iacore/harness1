@@ -182,11 +182,11 @@ system message is a prior over the output, and a prior is not a check.
 ## Re-running
 
 ```sh
-zig build judge -- <request.json> --beta
-zig build search -- --corpus src/research/zhengjian/corpus.json \
+zig build --build-file ./build.research.zig judge -- <request.json> --beta
+zig build --build-file ./build.research.zig search -- --corpus src/research/zhengjian/corpus.json \
     --techniques src/research/zhengjian/techniques.json \
     --trials 3 --temperature 1.0 --out out.json
-zig build search -- --only zhengsiwei-rendering --trials 12 --temperature 1.0 --out out.json
+zig build --build-file ./build.research.zig search -- --only zhengsiwei-rendering --trials 12 --temperature 1.0 --out out.json
 ```
 
 `--only` exists so the case that separates the techniques can be sampled harder

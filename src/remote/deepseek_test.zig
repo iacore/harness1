@@ -7,7 +7,7 @@
 //! that we never wrote into a reply is invisible, and a page we misread passes
 //! — client and fixture share the misreading. These tests pin the client to
 //! the transcription; they cannot say the transcription is right. Only a run
-//! against the live API can, which is `zig build deepseek_playground`.
+//! against the live API can, which is `zig build --build-file ./build.research.zig deepseek_playground`.
 
 const std = @import("std");
 const Io = std.Io;

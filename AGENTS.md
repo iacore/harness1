@@ -18,10 +18,11 @@ Even for a one-off experiment — probing the API, trying a field, checking what
 the model does — write a small Zig program instead of reaching for Python. The
 pattern is already here: `src/research/deepseek_playground.zig`, a scratch
 program that is neither installed by the default build nor built with it, run
-with `zig build deepseek_playground`, so `zig build` stays off the network and
-builds only the harness. Add a scratch program beside it or a build step next to
-that one. Do not use `src/python/` for experiments; its whole purpose is now
-gone.
+from the repository root with
+`zig build --build-file ./build.research.zig deepseek_playground`, so `zig build`
+stays off the network and builds only the harness. Add a scratch program beside
+it, and its step to `build.research.zig`. Do not use `src/python/` for
+experiments; its whole purpose is now gone.
 
 ## Coding follows `skill://our-coding-style`
 

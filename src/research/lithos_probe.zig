@@ -3,7 +3,7 @@
 //! A scratch program, not part of the library: it needs a key and a network,
 //! so it is neither installed nor built by the default step.
 //!
-//!   zig build lithos_probe
+//!   zig build --build-file ./build.research.zig lithos_probe
 //!
 //! It asks each roster model the same two questions and prints what the API
 //! did, because the vendor publishes no per-model metadata and the endpoint

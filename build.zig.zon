@@ -5,14 +5,22 @@
     // makes one package unambiguously an update of another. Editing it has
     // security and trust implications.
     .fingerprint = 0x2486bde74d701fbd,
-    .minimum_zig_version = "0.17.0-dev.2294+71403f299",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     // What the package hash covers, and so all that a consumer of it receives:
-    // what it takes to compile, plus the licence.
+    // what it takes to compile, plus the licence and the per-model notes under
+    // `src/remote/` that a user of the client reads. Developer-only source is
+    // left out — the research programs under `src/research`, the Python
+    // scratch client under `src/python`, and `build.research.zig`, which drives
+    // them. `src/` is named file by file because it holds both kinds.
     .paths = .{
         "build.zig",
         "build.zig.zon",
-        "src",
         "COPYING.md",
+        "src/root.zig",
+        "src/main.zig",
+        "src/json_encoder.zig",
+        "src/credentials.py",
+        "src/remote",
     },
 }

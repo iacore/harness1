@@ -3,7 +3,7 @@
 //! Two kinds of test, and no socket: the encoding half drives
 //! `json_encoder.stringify` over request values and reads the JSON back, and
 //! the parsing half feeds canned response bytes to `std.json`. The live
-//! behaviour of the API is exercised by `zig build lithos_probe` instead,
+//! behaviour of the API is exercised by `zig build --build-file ./build.research.zig lithos_probe` instead,
 //! which needs a key and a network.
 
 const std = @import("std");
