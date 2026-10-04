@@ -7,12 +7,3 @@ handmade. it's too complicated to express my thoughts to agents than to code it 
 "tools" is not a category, just a label humans use. The harness doesn't need it.
 
 prompt assembly should be dynamic.
-
-## ai notes
-
-
-notes: `research/deepseek-flash-non-thinking.dj` (what `deepseek-flash` does with thinking disabled, measured; re-run with `research/flash_probe.py`)
-
-notes: `research/zhengjian/findings.dj` (whether a system message can make the model stop passing off unattested wording as scripture — it cannot; the instruments and the sutra citations are beside it; re-run with `zig build --build-file ./build.research.zig search`)
-
-notes: `src/remote/lithos_models.md` (what each LithosAI model does with `reasoning_effort: none` and the sampling band the Kimi-K3 ids enforce — measured; re-run with `zig build --build-file ./build.research.zig lithos_probe`, refresh the roster with `zig build --build-file ./build.research.zig lithos_models`)

@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) void {
     const judge_exe = b.addExecutable(.{
         .name = "zhengjian_judger",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("research/zhengjian/judger.zig"),
+            .root_source_file = b.path("research/classifier-test/judger.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -51,7 +51,7 @@ pub fn build(b: *std.Build) void {
     const search_exe = b.addExecutable(.{
         .name = "zhengjian_search",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("research/zhengjian/search.zig"),
+            .root_source_file = b.path("research/classifier-test/search.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{

@@ -35,3 +35,19 @@ carry a fact the code cannot — an external mapping, why an order matters, a
 contract not visible in the signature — or it is deleted. And anything that can
 be expressed in code — a constraint, an invariant, a value — is expressed in
 code, not described.
+
+## AI notes
+
+Measurements live beside the code that produced them:
+
+- `research/deepseek-flash-non-thinking.dj` — what `deepseek-flash` does with
+  thinking disabled, measured; re-run with `research/deepseek_flash_probe.py`.
+- `research/classifier-test/findings.dj` — whether a system message can make the
+  model stop passing off unattested wording as scripture (it cannot); the
+  instruments and the sutra citations are beside it; re-run with
+  `zig build --build-file ./build.research.zig search`.
+- `src/remote/lithos_models.md` — what each LithosAI model does with
+  `reasoning_effort: none` and the sampling band the Kimi-K3 ids enforce,
+  measured; re-run with
+  `zig build --build-file ./build.research.zig lithos_probe`, refresh the
+  roster with `zig build --build-file ./build.research.zig lithos_models`.
