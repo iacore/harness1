@@ -814,7 +814,7 @@ class Deepseek:
         given here override the ones the conversation was running under.
         """
         twin = Deepseek.__new__(Deepseek)
-        twin.settings = dict(self.settings)
+        twin.settings = copy.deepcopy(self.settings)
         twin.messages = [copy.deepcopy(message) for message in self.messages]
         twin.tool = Tools(self.tool)
         twin.usage = copy.deepcopy(self.usage)
