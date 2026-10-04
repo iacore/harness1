@@ -1,0 +1,162 @@
+# LithosAI
+
+One note for everything LithosAI-related: the provider, this checkout's client
+for it, what the live API reveals about the serving stack, and the company's
+research lineage. Per-model request behaviour — the roster table, the sampling
+constraints, and the `strict` finding — lives in `src/remote/lithos_models.md`
+and is not repeated here.
+
+Compiled 2026-10-04 from live probing on this machine and public sources. Each
+claim says whether it was observed or inferred.
+
+## The provider
+
+- Hosted, OpenAI-compatible inference over open-weight models: Kimi K3,
+  DeepSeek V4.1 Flash, GLM-5.3, Qwen 3.8, GPT OSS, and others.
+- API root `https://api.lithosai.cloud/v1`. Docs <https://docs.lithosai.com>,
+  console <https://console.lithosai.cloud>.
+- Auth: `Authorization: Bearer <key>`; the key comes from `LITHOSAI_API_KEY` or
+  omp's credential store.
+- Implemented: `GET /models`, `GET /models/{author}/{slug}`, and
+  `POST /chat/completions`, streamed and not. `/completions`, `/embeddings`,
+  `/responses`, `/batches` answer 404.
+- Company: *gpuOS, Inc.* (the copyright holder in Motus's license). Founded by
+  Dimitrios Skarlatos (CEO) and Zhihao Jia (CTO), both CMU CS professors.
+  <https://www.lithosai.com/company>
+
+## In this checkout
+
+| Artifact | What it is |
+| --- | --- |
+| `src/remote/lithos.zig` | The client: `models` and `chat`, streamed and not; `ReasoningEffort`; tools; both error shapes as values. |
+| `src/remote/lithos_models.zig` | Generated model roster; `zig build --build-file ./build.research.zig lithos_models` rewrites it from `GET /v1/models`. |
+| `src/remote/lithos_models.md` | Per-model constraints (thinking, sampling) and the tool/`strict` findings. Source of truth for those. |
+| `src/remote/keys.zig` | `Provider.lithosai` — where the key is read. |
+| `src/research/lithos_probe.zig` | `zig build --build-file ./build.research.zig lithos_probe` — probes per-model `reasoning_effort` and `top_p`. |
+| `src/research/lithos_strict_probe.zig` | `zig build --build-file ./build.research.zig lithos_strict` — probes whether `strict` is enforced. |
+| `src/credentials.py` | Reads the key from omp's `agent.db`; shared with every provider, not Lithos-specific. |
+
+Client-side shape worth remembering: `chat.Function.strict` is a plain `?bool`
+beside `parameters`, a pre-encoded JSON Schema string. There is no schema builder
+here — the typed `StrictSchema` (which derives `required` and
+`additionalProperties`) belongs to the DeepSeek client in `src/remote/deepseek.zig`.
+
+## Tool calls and `strict`
+
+Summarised from `src/remote/lithos_models.md` (live, 2026-10-04,
+`deepseek-ai/DeepSeek-V4.1-Flash`):
+
+- `strict: true` is accepted and *enforced*: it compiles `parameters` into a
+  decoding constraint, so the model cannot emit arguments the schema forbids. The
+  discriminator was an `enum: ["Paris"]` against a prompt asking for Tokyo —
+  `strict: true` returned `{"city":"Paris"}`, `strict: false` returned
+  `{"city":"Tokyo"}`, stable over four runs.
+- It is *not* OpenAI's strict contract: a schema missing `required` or
+  `additionalProperties: false`, or with `additionalProperties: true`, was accepted
+  at 200 under `strict: true`. Nothing validates the schema server-side.
+- Neither the field nor the meaning is in the vendor's OpenAPI reference.
+
+## What the wire reveals about the engine
+
+Observed against `api.lithosai.cloud` on 2026-10-04:
+
+- Every `/chat/completions` response carries the header
+  `x-llm-d-flow-queue-duration-ms`. That is llm-d's flow-control admission metric,
+  defined as `FlowQueueDurationHeaderKey` in
+  <https://github.com/llm-d/llm-d-router/blob/main/pkg/epp/metadata/consts.go>.
+  So the request path runs through *llm-d*, the CNCF-sandbox Kubernetes
+  inference control plane (Red Hat, Google Cloud, IBM Research, CoreWeave,
+  NVIDIA) that routes *above* a model server.
+- Engine errors come back in vLLM's OpenAI-server shape, character for character.
+  Rejecting `top_p: 0.5` on `moonshotai/Kimi-K3`:
+
+```json
+{"object":"error","message":"top_p must be between 0.95 and 1.0 for this model; got 0.5","type":"BadRequestError","param":null,"code":400}
+```
+
+- The vendor's OpenAPI accepts `top_k` and calls it a "Non-standard sampling
+  parameter" — also a vLLM extra parameter, absent from the OpenAI schema.
+- No `server`, `via`, or request-id header is exposed; `/health`, `/metrics`,
+  `/version`, `/docs`, `/openapi.json` all 404. Only `/v1/*` exists.
+
+`[INFERENCE]` The model server is vLLM or a fork of it: the error envelope, the
+`top_k` extension, and the grammar-constrained `strict` behaviour all point that
+way, but a fork keeps the error classes and only headers and error bodies were
+read. The llm-d gateway is observed, not inferred. "Lithos Engine" is the
+marketing name for their closed layer on top of that stack.
+
+## Source code
+
+No public source for the engine. GitHub orgs `LithosAI-Org` and `lithos-ai` show
+no public repositories in my fetch. The engine is closed and also sold on-prem
+("Lithos Engine, deployed on your own standard GPUs").
+
+Their one open-source project is *Motus*, on the agent side.
+
+## Motus
+
+<https://github.com/lithos-ai/motus> · PyPI `lithosai-motus` · Apache-2.0 ·
+"Copyright 2026 gpuOS, Inc."
+
+An open-source *agent-serving* project plus a Python library for writing the
+agents it serves. Relevant capabilities:
+
+- `motus serve` exposes any agent as a session-based HTTP API locally; `motus
+  deploy` ships it to Motus Cloud. Self-managed or cloud, "same code, any scale".
+- Serves agents written in Motus, the OpenAI Agents SDK, the Anthropic SDK,
+  Google ADK, or plain Python — "change the import, keep your code".
+- `@agent_task` dataflow runtime: dependency graph inferred from data flow,
+  automatic parallelism, declarative retries/timeouts/backoff with per-call
+  `.policy()`.
+- Docker-sandbox tool provider; input/output guardrails; auto-tracing with an
+  HTML viewer, Jaeger export, and a cloud dashboard; human-in-the-loop
+  pause/ask/resume; prompt caching via `CachePolicy`.
+
+Versus omp (this harness): the serving/deployment surface is the real gap — omp
+has no way to run its agent as a hosted, scalable HTTP endpoint, and its embedding
+surfaces are in-process (Bun SDK) or stdio (`--mode rpc` / `acp`). Everywhere the
+two overlap (memory, compaction, MCP, multi-provider, subagents, prompt caching,
+human-in-the-loop), omp matches or exceeds. Motus is a serving framework; omp is
+an interactive coding harness.
+
+## Research lineage
+
+The company name and the engine's framing come from the founders' systems
+research.
+
+- *LithOS* — "An Operating System for Efficient Machine Learning on GPUs",
+  arXiv 2504.15465 (2025). A GPU-OS prototype: a TPC scheduler, transparent
+  kernel atomization, right-sizing, and power management. Skarlatos is a
+  co-author. `[INFERENCE]` The company name is taken from this paper; no code
+  links the engine to it.
+- *Zhihao Jia's serving/systems work* (all confirmed from the paper records):
+  - *SpecInfer* — tree-based speculative inference and verification; small
+    models draft a token tree, the LLM verifies it in parallel. 1.5–2.8× over
+    distributed serving, 2.6–3.5× over offloading. arXiv 2305.09781.
+  - *FlexFlow Serve* — low-latency serving via tree-based speculative
+    inference; the serving side of FlexFlow.
+  - *FlexFlow Train* — auto-discovers parallelization strategies for
+    distributed DNN training (Jia, Zaharia, Aiken). The repo is now split into
+    `flexflow-train` and `flexflow-serve`.
+  - *SpotServe* — LLM serving on preemptible/spot instances: dynamic
+    reparallelization, migration as bipartite matching (Kuhn–Munkres), stateful
+    inference recovery. 2.4–9.1× lower P99, 54% cheaper. arXiv 2311.15566.
+  - *Mirage* — multi-level superoptimizer for tensor programs via μGraphs
+    (kernel / thread block / thread levels), up to 3.3×. arXiv 2405.05751.
+- Correction to an earlier claim: *FlexGen is not Jia's.* Its authors are the
+  Stanford/HazyResearch group (Sheng, Zheng, Yuan, Li, Ryabinin, Fu, Xie, Chen,
+  Barrett, Gonzalez, Liang, Ré, Stoica, Zhang). Jia's line is FlexFlow /
+  SpecInfer / SpotServe / Mirage.
+
+## Links
+
+<https://www.lithosai.com>
+<https://docs.lithosai.com>
+<https://console.lithosai.cloud>
+<https://www.lithosai.com/blog/need-for-speed-in-agentic-inference>
+<https://github.com/llm-d/llm-d>
+<https://github.com/lithos-ai/motus>
+<https://arxiv.org/abs/2504.15465>
+<https://arxiv.org/abs/2305.09781>
+<https://arxiv.org/abs/2311.15566>
+<https://arxiv.org/abs/2405.05751>

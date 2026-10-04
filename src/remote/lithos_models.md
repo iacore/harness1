@@ -11,13 +11,13 @@ three places, and each entry says which:
 
 - **wire** — the vendor's OpenAPI reference (`docs.lithosai.com/openapi.yaml`,
   `info.version` 2026-09-17), the request schema's own field descriptions.
-- **live** — measured against `api.lithosai.cloud` by `zig build lithos_probe`
+- **live** — measured against `api.lithosai.cloud` by `zig build --build-file ./build.research.zig lithos_probe`
   (section "Probe" below), on 2026-10-04.
 - **console** — the vendor's Models page, as transcribed by the sibling
   `omp-custom` repo (`packages/catalog/src/compat/rules/providers/lithosai.kdl`),
   not re-verified by this harness.
 
-Re-run `zig build lithos_probe` to refresh the **live** column. When a line
+Re-run `zig build --build-file ./build.research.zig lithos_probe` to refresh the **live** column. When a line
 changes, update this file — the probe prints; it does not assert.
 
 ## Wire facts (every model)
@@ -40,6 +40,32 @@ changes, update this file — the probe prints; it does not assert.
   carries which one arrived.
 - **Not implemented**: `/completions`, `/embeddings`, `/responses`, `/batches`
   answer 404.
+
+## Tool calls and the `strict` flag
+
+- **Function calling** is documented: `tools` and `tool_choice` on the request,
+  `tool_calls`/`tool_call_id` on messages, `finish_reason: tool_calls`. The
+  reference writes `tools.items` as a bare `type: object`, so it gives no
+  function-object schema at all.
+- **`strict` is undocumented but honored** (**live**, 2026-10-04, measured by
+  `zig build --build-file ./build.research.zig lithos_strict` on `deepseek-ai/DeepSeek-V4.1-Flash`). The
+  reference never names a `strict` field; sending one is accepted and changes
+  decoding. A tool schema whose `city` is an `enum` of `["Paris"]`, prompted to
+  report on Tokyo: with `strict: true` the arguments are `{"city":"Paris"}` —
+  the decoder cannot emit the disallowed value — and with `strict: false` the
+  same schema and prompt give `{"city":"Tokyo"}`. Stable over four runs. So
+  `strict: true` compiles the schema into a decoding constraint, not merely
+  advice.
+- **But not OpenAI's strict rules.** OpenAI refuses a strict schema that omits
+  `required` or `additionalProperties`, or sets `additionalProperties: true`;
+  LithosAI accepted all three shapes at 200 with `strict: true`. It compiles
+  whatever JSON Schema it is handed, so a caller who wants OpenAI's strict
+  contract must still write it out — nothing enforces it server-side.
+- Only `deepseek-ai/DeepSeek-V4.1-Flash` was probed; other roster rows are
+  untested.
+
+The client side is a plain flag: `chat.Function.strict` is `?bool` beside
+`parameters`, a pre-encoded JSON Schema.
 
 ## Per-model (live, 2026-10-04)
 
@@ -119,11 +145,16 @@ Cost per million tokens (input / cache-read / output):
 
 ## Probe
 
-`zig build lithos_probe` sends each roster model two requests — `reasoning_effort:
+`zig build --build-file ./build.research.zig lithos_probe` sends each roster model two requests — `reasoning_effort:
 "none"` and `top_p: 0.5` — and prints `reasoning_tokens`, whether
 `reasoning_content` was non-empty, the answer length and the finish reason. It is
 a scratch program (`src/research/lithos_probe.zig`), neither installed nor built
 by the default step.
+
+`zig build --build-file ./build.research.zig lithos_strict` asks the endpoint about the `strict` flag
+(`src/research/lithos_strict_probe.zig`): it sends a forced tool call whose
+schema is varied against a prompt that contradicts it, and prints the returned
+arguments.
 
 The adapter itself (`src/remote/lithos.zig`) checks only the wire bounds every
 request shares; the per-model rows above are deliberately not encoded there.

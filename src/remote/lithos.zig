@@ -894,6 +894,10 @@ pub const chat = struct {
         /// through; it is written pre-encoded because the vendor's reference
         /// constrains it no further.
         parameters: ?json_encoder.Raw = null,
+
+        /// Compiles `parameters` into a decoding constraint, so the model
+        /// cannot emit arguments the schema forbids. Not in the vendor's
+        /// reference but honored by the endpoint; see lithos_models.md.
         strict: ?bool = null,
 
         pub const json = .{ .fields = .{ .strict = .{ .skip_if_false = true } } };

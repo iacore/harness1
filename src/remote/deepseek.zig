@@ -35,7 +35,7 @@ const Io = std.Io;
 const http = std.http;
 const Allocator = std.mem.Allocator;
 
-const json_encoder = @import("../root.zig").json_encoder;
+const json_encoder = @import("../json_encoder.zig");
 
 /// The OpenAI-compatible API root.
 pub const default_base_url = "https://api.deepseek.com";
