@@ -107,7 +107,7 @@ def api_key(provider: str = "deepseek", environment_variable: str = "DEEPSEEK_AP
     if value:
         return value
 
-    helper = os.path.normpath(os.path.join(_HERE, "..", "credentials.py"))
+    helper = os.path.normpath(os.path.join(_HERE, "..", "..", "src", "remote", "omp-keys.py"))
     store = os.path.expanduser("~/.omp/agent/agent.db")
     if not (os.path.exists(helper) and os.path.exists(store)):
         return None

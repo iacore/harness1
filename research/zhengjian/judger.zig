@@ -5,7 +5,7 @@
 //! process making its own request, and it comes back as a tool call whose
 //! arguments the API's strict mode has shaped.
 //!
-//! Deciding points:
+//! Design decisions:
 //!
 //!   * The verdict is forced, not requested. `tool_choice` names the `verdict`
 //!     function, so a turn that answers in prose instead of calling it is a

@@ -4,32 +4,15 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // src/root.zig is the module's entry point: only the declarations it
-    // re-exports are reachable by an importer, so anything meant to be public
-    // has to be named there.
-    const mod = b.addModule("harness1", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-    });
+    const mod = harnessModule(b, target);
 
-    // omp's credential store is a SQLite database, and reading it is left to a
-    // Python helper rather than to a linked library: the build stays free of
-    // SQL, and of libc with it.
-    //
-    // It is not installed to `bin` because it is not a program — the harness
-    // runs it through `python3`. src/remote/keys.zig looks for exactly this
-    // path under the install root, so the two have to agree.
-    const credentials = b.addInstallFileWithDir(
-        b.path("src/credentials.py"),
-        .lib,
-        "harness1/credentials.py",
-    );
+    const credentials = installOmpKeys(b);
     b.getInstallStep().dependOn(&credentials.step);
 
     const exe = b.addExecutable(.{
         .name = "harness1",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/main.zig"),
+            .root_source_file = b.path("app/main.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -59,7 +42,29 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_tests.step);
 
     // Nothing here needs Python but the helper above. The scratch client under
-    // `src/python`, the research programs under `src/research`, and the targets
+    // `research/python`, the research programs under `research`, and the targets
     // that run them live in `build.research.zig`, so they stay out of the
     // published package and out of `zig build -l`.
+}
+
+/// Only the declarations `src/root.zig` re-exports are reachable by an
+/// importer, so anything meant to be public has to be named there.
+pub fn harnessModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
+    return b.addModule("harness1", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+    });
+}
+
+/// omp's store is a SQLite database, and reading it is left to a Python helper
+/// rather than to a linked library: the build stays free of SQL, and of libc
+/// with it. Not installed to `bin`, because it is not a program — the harness
+/// runs it through `python3`. src/remote/keys.zig looks for exactly this path
+/// under the install root, so the two have to agree.
+pub fn installOmpKeys(b: *std.Build) *std.Build.Step.InstallFile {
+    return b.addInstallFileWithDir(
+        b.path("src/remote/omp-keys.py"),
+        .lib,
+        "harness1/omp-keys.py",
+    );
 }

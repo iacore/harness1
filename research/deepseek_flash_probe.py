@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """One-shot probe: what deepseek-flash does with thinking disabled.
 
-    python3 src/research/flash_probe.py            # every case, thinking off
-    python3 src/research/flash_probe.py --mode high  # same cases, thinking on
+    python3 research/flash_probe.py            # every case, thinking off
+    python3 research/flash_probe.py --mode high  # same cases, thinking on
 
 The key is read the way the library reads it: DEEPSEEK_API_KEY first, then
 omp's own store through the installed credentials helper. Prints one JSON
@@ -31,7 +31,7 @@ def api_key() -> str:
     key = os.environ.get("DEEPSEEK_API_KEY", "")
     if key:
         return key
-    helper = "zig-out/lib/harness1/credentials.py"
+    helper = "zig-out/lib/harness1/omp-keys.py"
     if os.path.exists(helper):
         done = subprocess.run(
             [sys.executable, helper, os.path.expanduser("~/.omp/agent/agent.db"), "deepseek"],

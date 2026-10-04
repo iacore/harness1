@@ -4,7 +4,7 @@ This applies to api.deepseek.com.
 
 What the model still does when `thinking` is disabled, measured against the live
 API on 2026-10-01. Model id `deepseek-flash`, i.e. DeepSeek-V4.1-Flash, served by
-DeepSeek's own endpoint. Readings come from `src/research/flash_probe.py`; every
+DeepSeek's own endpoint. Readings come from `research/flash_probe.py`; every
 number below was produced by a call made while writing this, not quoted from a
 benchmark.
 
@@ -136,13 +136,13 @@ needs no branch.
 ## Re-running
 
 ```sh
-python3 src/research/flash_probe.py --mode off
-python3 src/research/flash_probe.py --mode high
-python3 src/research/flash_probe.py --suite
+python3 research/flash_probe.py --mode off
+python3 research/flash_probe.py --mode high
+python3 research/flash_probe.py --suite
 ```
 
 The key is read the way the library reads it: `DEEPSEEK_API_KEY` first, then
-omp's store through the installed `credentials.py` helper. `--suite` is eight
+omp's store through the installed `omp-keys.py` helper. `--suite` is eight
 tasks at three settings; `--mode` is the full case list at one setting. The
 script asserts nothing and keeps no fixtures.
 

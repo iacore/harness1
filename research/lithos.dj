@@ -32,9 +32,9 @@ claim says whether it was observed or inferred.
 | `src/remote/lithos_models.zig` | Generated model roster; `zig build --build-file ./build.research.zig lithos_models` rewrites it from `GET /v1/models`. |
 | `src/remote/lithos_models.md` | Per-model constraints (thinking, sampling) and the tool/`strict` findings. Source of truth for those. |
 | `src/remote/keys.zig` | `Provider.lithosai` — where the key is read. |
-| `src/research/lithos_probe.zig` | `zig build --build-file ./build.research.zig lithos_probe` — probes per-model `reasoning_effort` and `top_p`. |
-| `src/research/lithos_strict_probe.zig` | `zig build --build-file ./build.research.zig lithos_strict` — probes whether `strict` is enforced. |
-| `src/credentials.py` | Reads the key from omp's `agent.db`; shared with every provider, not Lithos-specific. |
+| `research/lithos_probe.zig` | `zig build --build-file ./build.research.zig lithos_probe` — probes per-model `reasoning_effort` and `top_p`. |
+| `research/lithos_strict_probe.zig` | `zig build --build-file ./build.research.zig lithos_strict` — probes whether `strict` is enforced. |
+| `src/remote/omp-keys.py` | Reads the key from omp's `agent.db`; shared with every provider, not Lithos-specific. |
 
 Client-side shape worth remembering: `chat.Function.strict` is a plain `?bool`
 beside `parameters`, a pre-encoded JSON Schema string. There is no schema builder

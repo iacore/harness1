@@ -5,7 +5,7 @@
 //! its streaming response bodies come from `std.http.Client`, so no
 //! third-party dependency is needed.
 //!
-//! Deciding points:
+//! Design decisions:
 //!
 //!   * Errors are bare names, and the API's own failures are values rather
 //!     than errors: a call returns `Result(Success, Failure)` whose `.err`

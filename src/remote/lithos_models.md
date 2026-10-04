@@ -148,11 +148,11 @@ Cost per million tokens (input / cache-read / output):
 `zig build --build-file ./build.research.zig lithos_probe` sends each roster model two requests — `reasoning_effort:
 "none"` and `top_p: 0.5` — and prints `reasoning_tokens`, whether
 `reasoning_content` was non-empty, the answer length and the finish reason. It is
-a scratch program (`src/research/lithos_probe.zig`), neither installed nor built
+a scratch program (`research/lithos_probe.zig`), neither installed nor built
 by the default step.
 
 `zig build --build-file ./build.research.zig lithos_strict` asks the endpoint about the `strict` flag
-(`src/research/lithos_strict_probe.zig`): it sends a forced tool call whose
+(`research/lithos_strict_probe.zig`): it sends a forced tool call whose
 schema is varied against a prompt that contradicts it, and prints the returned
 arguments.
 

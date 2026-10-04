@@ -1,15 +1,15 @@
 """Poke at the harness's DeepSeek client from Python.
 
-    python3 src/python/play.py "why is the sky blue?"
-    python3 src/python/play.py --thinking --effort high "17*23?"
-    python3 src/python/play.py --tool "what is the weather in Kyoto?"
-    python3 src/python/play.py --json "one sentence about the sea, as JSON"
-    python3 src/python/play.py --no-stream --temperature 0.1 "name three primes"
+    python3 research/python/play.py "why is the sky blue?"
+    python3 research/python/play.py --thinking --effort high "17*23?"
+    python3 research/python/play.py --tool "what is the weather in Kyoto?"
+    python3 research/python/play.py --json "one sentence about the sea, as JSON"
+    python3 research/python/play.py --no-stream --temperature 0.1 "name three primes"
 
 The client is built from the Zig on the way in, whenever the Zig has changed,
 so there is no build step to remember.
 
-A scratch program, like `src/research/deepseek_playground.zig`: edit it. The
+A scratch program, like `research/deepseek_playground.zig`: edit it. The
 conversation is a `Deepseek`, which holds the messages, the tools, the client
 and the fields of the request. Its fields are attributes — `model`, `thinking`,
 `effort`, `max_tokens`, `temperature`, `top_p`, `stop`, `json_object`,

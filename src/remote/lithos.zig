@@ -11,7 +11,7 @@
 //! Endpoints the vendor does not implement (`/completions`, `/embeddings`,
 //! `/responses`, `/batches`) answer 404 and are not reachable here.
 //!
-//! Deciding points:
+//! Design decisions:
 //!
 //!   * Thinking is controlled by one field, `reasoning_effort`, which takes
 //!     either a named effort (`none|minimal|low|medium|high|xhigh|max`) or a

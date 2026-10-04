@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print the API key omp has stored for a provider.
 
-    credentials.py DATABASE PROVIDER
+    omp-keys.py DATABASE PROVIDER
 
 The database is omp's own, `~/.omp/agent/agent.db`; the caller resolves that
 path and passes it in, so this needs no environment of its own and says nothing
@@ -31,10 +31,10 @@ try:
 except ImportError as missing:
     # A python without its sqlite3 module cannot read the store at all, which
     # is not the same as a store without a credential in it.
-    print(f"credentials: {missing}", file=sys.stderr)
+    print(f"omp-keys: {missing}", file=sys.stderr)
     sys.exit(UNREADABLE)
 
-USAGE = "usage: credentials.py DATABASE PROVIDER"
+USAGE = "usage: omp-keys.py DATABASE PROVIDER"
 
 # `disabled_cause IS NULL` is what makes a credential enabled. The provider is
 # bound, never written into the statement.
@@ -60,7 +60,7 @@ def main(argv):
         finally:
             connection.close()
     except sqlite3.Error as error:
-        print(f"credentials: {database}: {error}", file=sys.stderr)
+        print(f"omp-keys: {database}: {error}", file=sys.stderr)
         return UNREADABLE
 
     if row is None:

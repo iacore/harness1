@@ -10,17 +10,17 @@
     // What the package hash covers, and so all that a consumer of it receives:
     // what it takes to compile, plus the licence and the per-model notes under
     // `src/remote/` that a user of the client reads. Developer-only source is
-    // left out — the research programs under `src/research`, the Python
-    // scratch client under `src/python`, and `build.research.zig`, which drives
-    // them. `src/` is named file by file because it holds both kinds.
+    // left out — the research programs under `research`, the Python
+    // scratch client under `research/python`, and `build.research.zig`, which drives
+    // them. `app` is the program that links the library; `src/` is named file
+    // by file so that a stray `__pycache__` under it is not hashed.
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "COPYING.md",
         "src/root.zig",
-        "src/main.zig",
         "src/json_encoder.zig",
-        "src/credentials.py",
         "src/remote",
+        "app",
     },
 }

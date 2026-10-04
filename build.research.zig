@@ -1,5 +1,5 @@
 // Targets only a developer of this project runs: the scratch programs under
-// src/research, and the Python type check. They live here rather than in
+// research, and the Python type check. They live here rather than in
 // `build.zig` so `zig build -l` lists only what the library's user runs, and
 // the file is left out of `build.zig.zon`'s `.paths` so the published package
 // carries no research.
@@ -11,30 +11,20 @@
 // Most targets need a key and a network, so none is part of the default step.
 
 const std = @import("std");
+const library = @import("build.zig");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const mod = b.addModule("harness1", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-    });
+    const mod = library.harnessModule(b, target);
 
-    // src/remote/keys.zig reads the harness's credential store by running this
-    // file, so both sides fix the same path in the install tree:
-    // lib/harness1/credentials.py under the prefix. The run steps below hand
-    // each program the prefix to find it.
-    const credentials = b.addInstallFileWithDir(
-        b.path("src/credentials.py"),
-        .lib,
-        "harness1/credentials.py",
-    );
+    const credentials = library.installOmpKeys(b);
 
     const playground_exe = b.addExecutable(.{
         .name = "deepseek_playground",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/research/deepseek_playground.zig"),
+            .root_source_file = b.path("research/deepseek_playground.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -48,7 +38,7 @@ pub fn build(b: *std.Build) void {
     const judge_exe = b.addExecutable(.{
         .name = "zhengjian_judger",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/research/zhengjian/judger.zig"),
+            .root_source_file = b.path("research/zhengjian/judger.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -61,7 +51,7 @@ pub fn build(b: *std.Build) void {
     const search_exe = b.addExecutable(.{
         .name = "zhengjian_search",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/research/zhengjian/search.zig"),
+            .root_source_file = b.path("research/zhengjian/search.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -90,7 +80,7 @@ pub fn build(b: *std.Build) void {
     const lithos_models_exe = b.addExecutable(.{
         .name = "lithos_models_gen",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/research/lithos_models_gen.zig"),
+            .root_source_file = b.path("research/lithos_models_gen.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -103,7 +93,7 @@ pub fn build(b: *std.Build) void {
     const lithos_probe_exe = b.addExecutable(.{
         .name = "lithos_probe",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/research/lithos_probe.zig"),
+            .root_source_file = b.path("research/lithos_probe.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -116,7 +106,7 @@ pub fn build(b: *std.Build) void {
     const lithos_strict_exe = b.addExecutable(.{
         .name = "lithos_strict_probe",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/research/lithos_strict_probe.zig"),
+            .root_source_file = b.path("research/lithos_strict_probe.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -126,12 +116,30 @@ pub fn build(b: *std.Build) void {
     });
     _ = addRunStep(b, lithos_strict_exe, &credentials.step, "lithos_strict", "Probe whether LithosAI enforces strict tool schemas");
 
+    // Attributes every part of every omp session transcript to a named
+    // feature. Reads only the local session store, so it needs neither a key
+    // nor a network.
+    const omp_features_exe = b.addExecutable(.{
+        .name = "omp_features",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/omp-features/features.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const omp_features_step = b.step("omp_features", "Attribute every part of every omp session to a named feature");
+    const run_omp_features = b.addRunArtifact(omp_features_exe);
+    run_omp_features.addPassthruArgs();
+    run_omp_features.setCwd(b.path("."));
+    omp_features_step.dependOn(&run_omp_features.step);
+
     // `ty` is not vendored, so this step needs it on the PATH: `uv tool install
-    // ty` (or pipx, or `pip install ty`). `ty.toml` at the root says what is
-    // checked and how strictly, which is why this runs from the build root.
-    const check_python_step = b.step("check_python", "Type-check the Python client under src/python");
+    // ty` (or pipx, or `pip install ty`). `ty.toml` beside the client says what
+    // is checked and how strictly, and ty reads it from the working directory,
+    // which is therefore the client's own.
+    const check_python_step = b.step("check_python", "Type-check the Python client under research/python");
     const ty_check = b.addSystemCommand(&.{ "ty", "check" });
-    ty_check.setCwd(b.path("."));
+    ty_check.setCwd(b.path("research/python"));
     check_python_step.dependOn(&ty_check.step);
 }
 

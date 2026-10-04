@@ -1,8 +1,8 @@
 """An agent loop in the shape of omp's, on top of harness1.
 
-    python3 src/python/loop.py "what is the weather in Kyoto?"
-    python3 src/python/loop.py --then "and in Oslo?" "what is the weather in Kyoto?"
-    python3 src/python/loop.py --budget 2 "check the weather, the time, and the news"
+    python3 research/python/loop.py "what is the weather in Kyoto?"
+    python3 research/python/loop.py --then "and in Oslo?" "what is the weather in Kyoto?"
+    python3 research/python/loop.py --budget 2 "check the weather, the time, and the news"
 
 `harness1.Deepseek.run()` is already a loop. This is the same loop written out,
 because the interesting part of an agent harness is not running tools — it is

@@ -6,7 +6,7 @@
 //!   zig build --build-file ./build.research.zig deepseek_playground
 //!
 //! Type check only:
-//!   zig build-obj --dep harness1 -Mroot=src/research/deepseek_playground.zig -Mharness1=src/root.zig -fno-emit-bin
+//!   zig build-obj --dep harness1 -Mroot=research/deepseek_playground.zig -Mharness1=src/root.zig -fno-emit-bin
 
 const std = @import("std");
 const Io = std.Io;

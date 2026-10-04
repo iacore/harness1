@@ -5,7 +5,7 @@
 //! verdict comes from `zhengjian_judger` — a separate process making its own
 //! request. Nothing here grades its own output.
 //!
-//! Deciding points:
+//! Design decisions:
 //!
 //!   * "Reliably" is the bar, not "usually". A technique that passes three
 //!     trials of four cases and fails the fourth is reported as failing, and

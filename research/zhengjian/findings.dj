@@ -35,7 +35,7 @@ by spawning the judger. Neither program grades its own output.
 Forced tool calling and thinking are mutually exclusive, and in this repo the
 refusal happens **client-side**: `chat.Request.validate` returns
 `tool_choice_function_in_thinking_mode` and nothing is sent. The Python probe
-`src/research/flash_probe.py` speaks raw `urllib` and so sees the server's own
+`research/flash_probe.py` speaks raw `urllib` and so sees the server's own
 400 for the same request. Both are true; they are different layers, and a run
 that reports only one of them is reporting its client, not the API.
 
@@ -183,8 +183,8 @@ system message is a prior over the output, and a prior is not a check.
 
 ```sh
 zig build --build-file ./build.research.zig judge -- <request.json> --beta
-zig build --build-file ./build.research.zig search -- --corpus src/research/zhengjian/corpus.json \
-    --techniques src/research/zhengjian/techniques.json \
+zig build --build-file ./build.research.zig search -- --corpus research/zhengjian/corpus.json \
+    --techniques research/zhengjian/techniques.json \
     --trials 3 --temperature 1.0 --out out.json
 zig build --build-file ./build.research.zig search -- --only zhengsiwei-rendering --trials 12 --temperature 1.0 --out out.json
 ```

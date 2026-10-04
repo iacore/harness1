@@ -2,11 +2,11 @@
 //! for the providers we call, and the environment variables that override
 //! them.
 //!
-//! Deciding points:
+//! Design decisions:
 //!
 //!   * The store is omp's own SQLite database, `~/.omp/agent/agent.db`, whose
 //!     `auth_credentials` table holds one JSON object per credential. Reading
-//!     it is left to `credentials.py`, a Python helper installed under the
+//!     it is left to `omp-keys.py`, a Python helper installed under the
 //!     harness's install root, so that SQLite stays out of this build: the
 //!     harness links no SQL, and the machine's own Python reads the store with
 //!     the SQLite it already has.
@@ -33,7 +33,7 @@ pub const credentials_path = ".omp/agent/agent.db";
 /// The helper, under the install root's `lib`. Not `bin`: a program belongs
 /// there, and this is not one, it is run through `python3`. Keep in step with
 /// build.zig, which installs it at exactly this path.
-const helper_path = "lib/harness1/credentials.py";
+const helper_path = "lib/harness1/omp-keys.py";
 
 /// Names the install root, for a program that is not where the install put it.
 /// The playground runs out of the build cache and is told `zig-out`; without
@@ -63,7 +63,7 @@ pub const Provider = struct {
 /// credential for the provider, is not among them.
 pub const Error = Allocator.Error || error{
     /// The helper could not be run: `python3` is not on the PATH, or no
-    /// `credentials.py` is where one is expected. The store was never asked.
+    /// `omp-keys.py` is where one is expected. The store was never asked.
     HelperUnavailable,
     /// The helper ran and could not read the store. It said why on its stderr,
     /// which is dropped: the caller can do nothing with it that this error
