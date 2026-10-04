@@ -9,37 +9,42 @@ pub fn build(b: *std.Build) void {
     const credentials = installOmpKeys(b);
     b.getInstallStep().dependOn(&credentials.step);
 
-    const exe = b.addExecutable(.{
-        .name = "harness1",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("app/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "harness1", .module = mod },
-            },
-        }),
-    });
-    b.installArtifact(exe);
-
-    const run_step = b.step("run", "Run the app");
-    const run_cmd = b.addRunArtifact(exe);
-    run_step.dependOn(&run_cmd.step);
-    // Runs the installed artifact rather than the one in the cache, so a
-    // relative path such as the helper's is read from where it was installed.
-    run_cmd.step.dependOn(b.getInstallStep());
-    run_cmd.addPassthruArgs();
-
     // One test executable per module, since a test binary only collects the
     // files one root module reaches.
-    const mod_tests = b.addTest(.{ .root_module = mod });
-    const exe_tests = b.addTest(.{ .root_module = exe.root_module });
-    const run_mod_tests = b.addRunArtifact(mod_tests);
-    const run_exe_tests = b.addRunArtifact(exe_tests);
-
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_exe_tests.step);
+    const mod_tests = b.addTest(.{ .root_module = mod });
+    test_step.dependOn(&b.addRunArtifact(mod_tests).step);
+
+    // `app` is developer-only: the published package carries the library and no
+    // program, so the exe exists only in a checkout that has it.
+    if (b.root.access(b.graph.io, "app/main.zig", .{})) |_| {
+        b.dependOnDirectoryContents(b.path("app"));
+        const exe = b.addExecutable(.{
+            .name = "harness1",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("app/main.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{
+                    .{ .name = "harness1", .module = mod },
+                },
+            }),
+        });
+        b.installArtifact(exe);
+
+        const run_step = b.step("run", "Run the app");
+        const run_cmd = b.addRunArtifact(exe);
+        run_step.dependOn(&run_cmd.step);
+        // Runs the installed artifact rather than the one in the cache, so a
+        // relative path such as the helper's is read from where it was installed.
+        run_cmd.step.dependOn(b.getInstallStep());
+        run_cmd.addPassthruArgs();
+
+        const exe_tests = b.addTest(.{ .root_module = exe.root_module });
+        test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+
+        test_step.dependOn(&addPathsOnlyTest(b).step);
+    } else |_| {}
 
     // Nothing here needs Python but the helper above. The scratch client under
     // `research/python`, the research programs under `research`, and the targets
@@ -67,4 +72,59 @@ pub fn installOmpKeys(b: *std.Build) *std.Build.Step.InstallFile {
         .lib,
         "harness1/omp-keys.py",
     );
+}
+
+/// What a consumer of the package receives is `build.zig.zon`'s `.paths` and
+/// nothing else — `app` is developer-only, and the program is gated on it. A
+/// whitelisted tree can still fail to build when a shipped file reaches for one
+/// that was left out, and no ordinary build of the dev tree catches that, so
+/// the tests rebuild the package from the whitelist alone under a scratch
+/// directory with the same compiler.
+fn addPathsOnlyTest(b: *std.Build) *std.Build.Step.Run {
+    const script =
+        \\set -eu
+        \\zig=$1 src=$2
+        \\shift 2
+        \\dest=$(mktemp -d)
+        \\trap 'rm -rf "$dest"' EXIT
+        \\for p in "$@"; do
+        \\    mkdir -p "$dest/$(dirname "$p")"
+        \\    cp -R "$src/$p" "$dest/$p"
+        \\done
+        \\cd "$dest"
+        \\"$zig" build
+        \\"$zig" build test
+    ;
+    const run = b.addSystemCommand(&.{ "sh", "-c", script, "sh", b.graph.zig_exe });
+    run.addDirectoryArg(b.path("."));
+    for (packagePaths(b)) |p| run.addArg(p);
+    // The scratch directory is outside the cache, so the step cannot be cached.
+    run.has_side_effects = true;
+    return run;
+}
+
+/// The `.paths` list, read from `build.zig.zon` so that the test above cannot
+/// drift from what the package actually ships.
+fn packagePaths(b: *std.Build) []const []const u8 {
+    const arena = b.graph.arena;
+    b.dependOnFileContents(b.path("build.zig.zon"));
+    const zon = b.root.resolvePosix(arena, "build.zig.zon") catch @panic("OOM");
+    const source = zon.root_dir.handle.readFileAllocOptions(
+        b.graph.io,
+        zon.sub_path,
+        arena,
+        .limited(1 << 20),
+        .of(u8),
+        0,
+    ) catch |err| std.debug.panic("cannot read build.zig.zon: {t}", .{err});
+    const Manifest = struct { paths: []const []const u8 };
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const manifest = std.zon.parse.fromSlice(Manifest, .{
+        .gpa = arena,
+        .arena = arena,
+        .source = source,
+        .diagnostics = &diagnostics,
+        .ignore_unknown_fields = true,
+    }) catch |err| std.debug.panic("cannot parse build.zig.zon: {t}", .{err});
+    return manifest.paths;
 }

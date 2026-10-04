@@ -12,8 +12,9 @@
     // `src/remote/` that a user of the client reads. Developer-only source is
     // left out — the research programs under `research`, the Python
     // scratch client under `research/python`, and `build.research.zig`, which drives
-    // them. `app` is the program that links the library; `src/` is named file
-    // by file so that a stray `__pycache__` under it is not hashed.
+    // them. The program under `app` is developer-only as well. `src/` is named
+    // file by file: every file the library reaches must be listed here, and
+    // `zig build test` enforces that by rebuilding the package from this list.
     .paths = .{
         "build.zig",
         "build.zig.zon",
@@ -22,6 +23,5 @@
         "src/json_encoder.zig",
         "src/omp_features.zig",
         "src/remote",
-        "app",
     },
 }

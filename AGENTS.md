@@ -7,7 +7,16 @@
 build on it, extend it, or copy its API. The harness of record is the Zig under
 `src/`, reached through `src/root.zig`: `src/remote/deepseek.zig` is the
 DeepSeek client. Any work that needs a chat-completions client goes there,
-not here.
+not here. `src/` is a library module: its public surface is exactly what
+`src/root.zig` re-exports. The program is not there. `fn main` and the TUI live
+in `app/`, whose `main.zig` is the executable root in `build.zig`. `app/`
+imports the `harness1` module; `src/` can never import `app/`, because Zig
+rejects any import that leaves the module's directory (`import of file outside
+module path`). `app/` is developer-only and is left out of the published
+package's `.paths`, so the shipped `build.zig` gates the exe on `app/main.zig`
+being present. `zig build test` guards the whitelist: it copies the `.paths`
+entries into a scratch directory and rebuilds the package there, so a library
+file that is reached but not listed fails the test.
 
 The only Python the build needs is `src/remote/omp-keys.py`, which
 `src/remote/keys.zig` runs to read omp's credential store. That is not the
