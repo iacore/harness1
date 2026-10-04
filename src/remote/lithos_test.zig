@@ -104,6 +104,18 @@ test "tools carry a pre-encoded schema verbatim" {
     }, "{\"model\":\"zai-org/GLM-5.3\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"weather\",\"parameters\":{\"type\":\"object\"}}}]}");
 }
 
+test "every modelled message role encodes its wire name" {
+    const cases = [_]struct { message: chat.Message, json: []const u8 }{
+        .{ .message = .{ .system = .{ .content = chat.text("x") } }, .json = "{\"role\":\"system\",\"content\":\"x\"}" },
+        .{ .message = .{ .user = .{ .content = chat.text("x") } }, .json = "{\"role\":\"user\",\"content\":\"x\"}" },
+        .{ .message = .{ .assistant = .{ .content = chat.text("x") } }, .json = "{\"role\":\"assistant\",\"content\":\"x\"}" },
+        .{ .message = .{ .tool = .{ .content = chat.text("x"), .tool_call_id = "call_1" } }, .json = "{\"role\":\"tool\",\"content\":\"x\",\"tool_call_id\":\"call_1\"}" },
+        // Undocumented in the reference; the endpoint's validator accepts it.
+        .{ .message = .{ .latest_reminder = .{ .content = chat.text("x") } }, .json = "{\"role\":\"latest_reminder\",\"content\":\"x\"}" },
+    };
+    for (cases) |case| try expectJson(case.message, case.json);
+}
+
 // -- Validation -------------------------------------------------------------
 
 test "validate accepts a well-formed request and names each broken bound" {

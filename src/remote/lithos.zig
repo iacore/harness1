@@ -696,14 +696,18 @@ pub const chat = struct {
     /// The endpoint's path, relative to the API root.
     pub const path = "/chat/completions";
 
-    /// Roles of a request or response message.
+    /// Roles of a request or response message: the five this client sends, not the
+    /// endpoint's whole seven. `developer` is `system` by another name, and
+    /// `function` is served by no model tested; both are left out rather than
+    /// modelled as peers of the rest. See lithos_models.md.
     pub const Role = struct {
         pub const system = "system";
         pub const user = "user";
         pub const assistant = "assistant";
         pub const tool = "tool";
-        pub const function = "function";
-        pub const developer = "developer";
+        /// Undocumented. The Kimi template rejects it; DeepSeek and GLM render
+        /// it. See lithos_models.md.
+        pub const latest_reminder = "latest_reminder";
     };
 
     /// Object types of a completion and of a streamed chunk.
@@ -795,49 +799,40 @@ pub const chat = struct {
         return .{ .text = content };
     }
 
-    /// One entry of a conversation. A closed set of six variants, one per role
-    /// the API defines, so a field a role does not take cannot be built.
+    /// One entry of a conversation. A closed set of five variants, one per role
+    /// this client sends, so a field a role does not take cannot be built.
     pub const Message = union(enum) {
         system: SystemMessage,
-        developer: DeveloperMessage,
         user: UserMessage,
         assistant: AssistantMessage,
         tool: ToolMessage,
-        function: FunctionMessage,
+        latest_reminder: LatestReminderMessage,
 
         pub const json = .{
             .tag_key = "role",
             .fields = .{
                 .system = .{ .flatten = true },
-                .developer = .{ .flatten = true },
                 .user = .{ .flatten = true },
                 .assistant = .{ .flatten = true },
                 .tool = .{ .flatten = true },
-                .function = .{ .flatten = true },
+                .latest_reminder = .{ .flatten = true },
             },
         };
 
         pub fn role(self: Message) []const u8 {
             return switch (self) {
                 .system => Role.system,
-                .developer => Role.developer,
                 .user => Role.user,
                 .assistant => Role.assistant,
                 .tool => Role.tool,
-                .function => Role.function,
+                .latest_reminder => Role.latest_reminder,
             };
         }
     };
 
-    /// The instruction that steers the model.
+    /// The instruction that steers the model. `developer` is the other name for
+    /// this role and is not modelled separately.
     pub const SystemMessage = struct {
-        content: Content,
-        name: ?[]const u8 = null,
-    };
-
-    /// The instruction in the role the newer OpenAI models take; the endpoint
-    /// enumerates `developer` alongside `system`.
-    pub const DeveloperMessage = struct {
         content: Content,
         name: ?[]const u8 = null,
     };
@@ -870,10 +865,12 @@ pub const chat = struct {
         tool_call_id: []const u8,
     };
 
-    /// A legacy function-role message: a function's output, named.
-    pub const FunctionMessage = struct {
-        content: []const u8,
-        name: []const u8,
+    /// An instruction the endpoint re-applies as the latest reminder; rendered
+    /// like `system`, but off the vendor's reference. Carries only `content`:
+    /// the extra `name` and `tool_call_id` the API tolerates degraded the
+    /// model's output when the probe sent them.
+    pub const LatestReminderMessage = struct {
+        content: Content,
     };
 
     pub fn toolResult(tool_call_id: []const u8, content: []const u8) ToolMessage {

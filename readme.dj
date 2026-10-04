@@ -2,8 +2,18 @@
 
 handmade. it's too complicated to express my thoughts to agents than to code it myself. agents are still used for routine tasks.
 
+## planned features
+
+- [ask] tool with ability to disable it (unattended mode)
+- kagi search
+- file edit
+- persistent fish shell
+- interactive api (cpython/deno/bun)
+- lithosai
+
 ## thoughts
 
 "tools" is not a category, just a label humans use. The harness doesn't need it.
 
 prompt assembly should be dynamic.
+

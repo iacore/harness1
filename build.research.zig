@@ -116,6 +116,32 @@ pub fn build(b: *std.Build) void {
     });
     _ = addRunStep(b, lithos_strict_exe, &credentials.step, "lithos_strict", "Probe whether LithosAI enforces strict tool schemas");
 
+    const lithos_roles_exe = b.addExecutable(.{
+        .name = "lithos_roles_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/lithos_roles_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness1", .module = mod },
+            },
+        }),
+    });
+    _ = addRunStep(b, lithos_roles_exe, &credentials.step, "lithos_roles", "Probe the message and role shapes LithosAI accepts");
+
+    const lithos_sysdev_exe = b.addExecutable(.{
+        .name = "lithos_sysdev_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/lithos_sysdev_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness1", .module = mod },
+            },
+        }),
+    });
+    _ = addRunStep(b, lithos_sysdev_exe, &credentials.step, "lithos_sysdev", "Probe how DeepSeek-on-LithosAI treats system versus developer turns");
+
     // Attributes every part of every omp session transcript to a named
     // feature. Reads only the local session store, so it needs neither a key
     // nor a network.

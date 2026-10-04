@@ -34,6 +34,8 @@ claim says whether it was observed or inferred.
 | `src/remote/keys.zig` | `Provider.lithosai` — where the key is read. |
 | `research/lithos_probe.zig` | `zig build --build-file ./build.research.zig lithos_probe` — probes per-model `reasoning_effort` and `top_p`. |
 | `research/lithos_strict_probe.zig` | `zig build --build-file ./build.research.zig lithos_strict` — probes whether `strict` is enforced. |
+| `research/lithos_roles_probe.zig` | `zig build --build-file ./build.research.zig lithos_roles` — probes the message and role shapes the endpoint accepts, raw HTTP; the seventh role it found is written up in `src/remote/lithos_models.md`. |
+| `research/lithos_sysdev_probe.zig` | `zig build --build-file ./build.research.zig lithos_sysdev` — probes `system` against `developer`, first against later, by codeword. |
 | `src/remote/omp-keys.py` | Reads the key from omp's `agent.db`; shared with every provider, not Lithos-specific. |
 
 Client-side shape worth remembering: `chat.Function.strict` is a plain `?bool`
