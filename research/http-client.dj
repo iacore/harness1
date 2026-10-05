@@ -44,7 +44,7 @@ Wall time for N requests issued together, three trials each.
 | 20 | curl h2 | 1 | 0.89 / 0.90 / 0.89 |
 | 20 | `std.http` h1 | 20 | 0.89 / 1.71 / 1.09 |
 
-- h2 carries all N streams on **one** connection; h1.1 needs one per in-flight
+- h2 carries all N streams on *one* connection; h1.1 needs one per in-flight
   request, so N TLS handshakes.
 - At N=10 h1.1 and h2 are the same cost, because the N handshakes run in
   parallel and all finish about when one does. At N=20 h1.1 goes erratic
@@ -64,7 +64,7 @@ h2: status=403 negotiated=HTTP/1.1
 abort: h2 was required and not negotiated
 ```
 
-The request **succeeded over HTTP/1.1**; libcurl fell back without a word. So a
+The request *succeeded over HTTP/1.1*; libcurl fell back without a word. So a
 client that must run h2 has to read `CURLINFO_HTTP_VERSION` after the response
 starts and abort on anything but `CURL_HTTP_VERSION_2_0`. Against the endpoint
 that matters it does negotiate h2 — `api.lithosai.cloud`, `h2` required:

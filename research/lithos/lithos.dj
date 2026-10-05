@@ -95,17 +95,17 @@ resolver (every host here maps into the proxy range 198.18.0.0/15) and against
 each of the three A records with `--resolve` to the real address from DoH, so
 the proxy is out of the path. Both readings agree.
 
-- **HTTP/2 — yes.** The handshake negotiates `h2`: `openssl s_client -alpn
+- *HTTP/2 — yes.* The handshake negotiates `h2`: `openssl s_client -alpn
   h2,http/1.1` prints `ALPN protocol: h2` on all three addresses, and `curl`
   uses HTTP/2 by default (`GET /v1/models` answers `401` with
   `http_version=2`). HTTP/1.1 is served too, and a client that offers no ALPN
   (which is what `std.http.Client` below does) gets HTTP/1.1.
-- **HTTP/3 — no.** No response from the API host carries `Alt-Svc` — checked on
+- *HTTP/3 — no.* No response from the API host carries `Alt-Svc` — checked on
   the `401` of `/v1/models`, the `404` of `/`, and the `404` of the API root —
   and `curl --http3-only` to each of the three addresses times out. That is the
   endpoint, not this sandbox: the same command against `cloudflare-quic.com`'s
   real address returns HTTP/3 `200`, so UDP egress works.
-- The **docs and marketing hosts differ**. `docs.lithosai.com` (Cloudflare) and
+- The *docs and marketing hosts differ*. `docs.lithosai.com` (Cloudflare) and
   `lithosai.com` (CloudFront) both send `alt-svc: h3=":443"; ma=86400`, and
   `docs.lithosai.com` answers HTTP/3 `200`. Only the inference API's own edge
   stops at h2.
