@@ -11,7 +11,7 @@ deliberate, and it is bounded by where the edit is — see `research/prompt-cach
 `research/terminology.dj` fixes what `agent`, `prompt` and `last prompt` mean
 here — an agent is a running prompt, a prompt is every chat turn visible to the
 LithosAI API, the last prompt is the last turn — and carries the constraint that
-every harness1 agent on a machine shares a single Linux process group. Use the
+every run1 agent on a machine shares a single Linux process group. Use the
 words with those meanings, and add to that file rather than redefining them
 elsewhere.
 

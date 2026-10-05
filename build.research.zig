@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "harness1", .module = mod },
+                .{ .name = "run1", .module = mod },
             },
         }),
     });
@@ -42,7 +42,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "harness1", .module = mod },
+                .{ .name = "run1", .module = mod },
             },
         }),
     });
@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "harness1", .module = mod },
+                .{ .name = "run1", .module = mod },
             },
         }),
     });
@@ -70,7 +70,7 @@ pub fn build(b: *std.Build) void {
     run_search.addArtifactArg(judge_exe);
     run_search.addPassthruArgs();
     run_search.setCwd(b.path("."));
-    run_search.setEnvironmentVariable("HARNESS1_INSTALL_ROOT", "zig-out");
+    run_search.setEnvironmentVariable("RUN1_INSTALL_ROOT", "zig-out");
     run_search.step.dependOn(&credentials.step);
     search_step.dependOn(&run_search.step);
 
@@ -84,7 +84,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "harness1", .module = mod },
+                .{ .name = "run1", .module = mod },
             },
         }),
     });
@@ -97,7 +97,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "harness1", .module = mod },
+                .{ .name = "run1", .module = mod },
             },
         }),
     });
@@ -110,7 +110,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "harness1", .module = mod },
+                .{ .name = "run1", .module = mod },
             },
         }),
     });
@@ -123,7 +123,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "harness1", .module = mod },
+                .{ .name = "run1", .module = mod },
             },
         }),
     });
@@ -136,7 +136,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "harness1", .module = mod },
+                .{ .name = "run1", .module = mod },
             },
         }),
     });
@@ -193,7 +193,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "harness1", .module = mod },
+                .{ .name = "run1", .module = mod },
             },
         }),
     });
@@ -209,7 +209,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "harness1", .module = mod },
+                .{ .name = "run1", .module = mod },
             },
         }),
     });
@@ -231,7 +231,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "harness1", .module = mod },
+                .{ .name = "run1", .module = mod },
             },
         }),
     });
@@ -255,7 +255,7 @@ pub fn build(b: *std.Build) void {
 // on the command line.
 //
 // A scratch program runs out of the build cache, not the install tree, so it
-// needs to be told where that tree is: `HARNESS1_INSTALL_ROOT` is the default
+// needs to be told where that tree is: `RUN1_INSTALL_ROOT` is the default
 // prefix `zig-out`, relative to the build root that `setCwd` pins. Installing
 // elsewhere with `-p` means naming that prefix here too; this cannot see the
 // prefix Zig resolves at install time. The credentials install is a dependency
@@ -271,7 +271,7 @@ fn addRunStep(
     const run = b.addRunArtifact(exe);
     run.addPassthruArgs();
     run.setCwd(b.path("."));
-    run.setEnvironmentVariable("HARNESS1_INSTALL_ROOT", "zig-out");
+    run.setEnvironmentVariable("RUN1_INSTALL_ROOT", "zig-out");
     run.step.dependOn(credentials);
     step.dependOn(&run.step);
     return run;

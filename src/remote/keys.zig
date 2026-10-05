@@ -35,13 +35,13 @@ pub const credentials_path = ".omp/agent/agent.db";
 /// The helper, under the install root's `lib`. Not `bin`: a program belongs
 /// there, and this is not one, it is run through `python3`. Keep in step with
 /// build.zig, which installs it at exactly this path.
-const helper_path = "lib/harness1/omp-keys.py";
+const helper_path = "lib/run1/omp-keys.py";
 
 /// Names the install root, for a program that is not where the install put it.
 /// The playground runs out of the build cache and is told `zig-out`; without
 /// it, the root is taken to be the directory the running executable's `bin` is
 /// inside.
-pub const install_root_var = "HARNESS1_INSTALL_ROOT";
+pub const install_root_var = "RUN1_INSTALL_ROOT";
 
 pub const Provider = struct {
     /// The `provider` column of `auth_credentials`.
@@ -165,7 +165,7 @@ fn helperPath(
 
 /// A home directory that is not there, so that the store cannot be opened and
 /// whatever the lookup returns came from the environment.
-const test_no_home = "/nonexistent/harness1-test-home";
+const test_no_home = "/nonexistent/run1-test-home";
 
 /// A logger that drops what it is given: no test here reaches a helper, so
 /// nothing is ever reported to it.

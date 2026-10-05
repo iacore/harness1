@@ -1,4 +1,4 @@
-# The Python client in this directory, installable so that `import harness1`
+# The Python client in this directory, installable so that `import run1`
 # works from anywhere:
 #
 #     python3 -m pip install --user -e .
@@ -14,7 +14,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "harness1"
+name = "run1"
 # The same version the Zig package carries, which is to say none yet.
 version = "0.0.0"
 description = "A stdlib-only DeepSeek chat-completions client: prompts, tool calls and agent loops over the API."
@@ -27,4 +27,4 @@ dependencies = []
 # The client, and only the client. `loop.py` and `play.py` are programs with a
 # command line, run from the source tree: nothing imports either, and the loop
 # `loop.py` writes out in full is the one `Deepseek.run()` already is.
-py-modules = ["harness1"]
+py-modules = ["run1"]

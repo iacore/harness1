@@ -20,7 +20,7 @@ const std = @import("std");
 const Io = std.Io;
 const json = std.json;
 const Allocator = std.mem.Allocator;
-const omp = @import("harness1").omp_features;
+const omp = @import("run1").omp_features;
 
 fn in(values: []const []const u8, s: []const u8) bool {
     for (values) |t| if (std.mem.eql(u8, t, s)) return true;

@@ -22,7 +22,7 @@ import sys
 import typing
 
 HERE = pathlib.Path(__file__).resolve().parent
-REPO = HERE.parent.parent.parent  # harness1/
+REPO = HERE.parent.parent.parent  # run1/
 JUDGER_TIMEOUT = 300
 OMP_TIMEOUT = 600
 

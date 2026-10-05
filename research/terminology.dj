@@ -24,11 +24,19 @@ descriptions: code, comments and documents use them with exactly these meanings.
 
 ## A word we do not define
 
-`agent` is fine to say, and it means little here, so it defines nothing. It is not
-the runner (`running prompt`), not the turns (`prompt`), and not what has been
-experienced (`world model`) — reach for the word that names the thing.
+`agent` is fine to say to outsiders, where it is the industry word. It is not a
+term here, and not because it is vague: its default meaning is an *owner* — a thing
+with its own knowledge, its own state, and its own lifetime. This project denies
+exactly that, since experience is not anyone's and a running prompt recalls rather
+than contains. So the word asserts something untrue rather than something
+imprecise.
+
+The tell is a possessive: "the agent's turns", "the agent's state", "its files".
+Wherever one of those appears, the word has put an owner back. Name the thing
+instead — the runner is a `running prompt`, the turns are the `prompt`, and what
+has been experienced is the `world model`.
 
 ## Constraints
 
-- All harness1 processes on a machine share a single Linux process group, so the
+- All run1 processes on a machine share a single Linux process group, so the
   machine's whole set of running prompts can be signalled as one.

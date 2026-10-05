@@ -12,10 +12,10 @@
 
 const std = @import("std");
 const Io = std.Io;
-const harness1 = @import("harness1");
-const lithos = harness1.lithos;
-const keys = harness1.keys;
-const debug = harness1.debug;
+const run1 = @import("run1");
+const lithos = run1.lithos;
+const keys = run1.keys;
+const debug = run1.debug;
 
 /// Relative to the build root.
 const output_path = "src/remote/lithos_models.zig";

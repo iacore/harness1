@@ -1,8 +1,8 @@
 # The process model
 
-How harness1's work is to be split across Linux processes, and the mechanisms
+How run1's work is to be split across Linux processes, and the mechanisms
 each split rests on. The rule this serves is in `research/terminology.dj`: every
-harness1 running prompt on a machine shares a single Linux process group. The design here
+run1 running prompt on a machine shares a single Linux process group. The design here
 is a proposal; what exists in the tree is stated as such. The worked precedents
 are Kitty, tmux and Herdr; everything read from them is under `## KiTTY` and
 `## tmux and Herdr`. The turn model has its own file, `research/turns.dj`, and
@@ -38,7 +38,7 @@ does *not* become one: it is a client.
 
 ## An invocation is a client; the server is separate
 
-Running `harness1` does one of two things, and the socket decides which:
+Running `run1` does one of two things, and the socket decides which:
 
 - A server is already answering on the socket → the invocation is a *client*.
 - Nothing is answering → the invocation *spawns* the server, and then becomes a
@@ -286,7 +286,7 @@ socket so the boss can tell it when the window it opened dies
 *Signals* are `SIGINT, SIGHUP, SIGTERM, SIGCHLD, SIGUSR1, SIGUSR2`, masked in
 every thread and consumed from one `signalfd`.
 
-*Capacity* is declared rather than learned, which is the opposite of harness1's
+*Capacity* is declared rather than learned, which is the opposite of run1's
 rule: `#define MAX_CHILDREN 512` (`kitty/data-types.h:157`) sizes the child
 array, the pollfd array, the GPU buffers and the OS-window count, and adding one
 past it is refused outright.
@@ -295,7 +295,7 @@ past it is refused outright.
 
 Read from `man tmux` on this machine and from the Herdr checkout at
 `~/computing/terminal/herdr`. Both are multiplexers with a long-lived server and
-disposable clients, which is the model harness1 is taking.
+disposable clients, which is the model run1 is taking.
 
 *tmux.* The server socket lives in a directory under `TMUX_TMPDIR`, or `/tmp`
 when that is unset, named `tmux-UID` and required not to be world readable,
@@ -318,6 +318,6 @@ if path.exists() && UnixStream::connect(path).is_ok() {
 ```
 
 A pane's agent is tracked through a status the server owns — `idle`, `working`,
-`blocked`, `done`, `unknown` — which is the state harness1's server needs in order
+`blocked`, `done`, `unknown` — which is the state run1's server needs in order
 to know that all running prompts are done and it may exit.
 

@@ -1,10 +1,10 @@
 .{
-    .name = .harness1,
+    .name = .run1,
     .version = "0.0.0",
     // Generated when the package was created, and never changed: it is what
     // makes one package unambiguously an update of another. Editing it has
     // security and trust implications.
-    .fingerprint = 0x2486bde74d701fbd,
+    .fingerprint = 0x18e85ba3defaaa68,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     // What the package hash covers, and so all that a consumer of it receives:

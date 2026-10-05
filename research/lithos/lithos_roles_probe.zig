@@ -16,9 +16,9 @@
 const std = @import("std");
 const Io = std.Io;
 const http = std.http;
-const harness1 = @import("harness1");
-const keys = harness1.keys;
-const debug = harness1.debug;
+const run1 = @import("run1");
+const keys = run1.keys;
+const debug = run1.debug;
 
 const model = "deepseek-ai/DeepSeek-V4.1-Flash";
 const endpoint = "https://api.lithosai.cloud/v1/chat/completions";

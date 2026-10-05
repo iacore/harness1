@@ -31,7 +31,7 @@ def api_key() -> str:
     key = os.environ.get("DEEPSEEK_API_KEY", "")
     if key:
         return key
-    helper = "zig-out/lib/harness1/omp-keys.py"
+    helper = "zig-out/lib/run1/omp-keys.py"
     if os.path.exists(helper):
         done = subprocess.run(
             [sys.executable, helper, os.path.expanduser("~/.omp/agent/agent.db"), "deepseek"],

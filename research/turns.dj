@@ -36,7 +36,7 @@ by adjacency between turns:
   Reading a fork's turns directly is a meta operation (omp's `/tan`), not the
   ordinary reading of a conversation.
 - *Turn state*, held apart from everything else. omp bundles turn state with
-  non-turn state into one session; harness1 does not. A turn's state is a
+  non-turn state into one session; run1 does not. A turn's state is a
   property of that turn, not of the session it happens to sit in.
 
 ## Tool state lives on turns
@@ -84,8 +84,8 @@ engine"*, and its own module list is the design in nine words: `arena`, `node`,
   `PropKey`), which is what makes an unfixed schema expressible at all: a new
   tool adds a tag, not a migration.
 
-Two differences for harness1. omp2 materializes a tree *per session* and bundles
-turn state with the rest of the session, while harness1 keeps each running prompt's own
+Two differences for run1. omp2 materializes a tree *per session* and bundles
+turn state with the rest of the session, while run1 keeps each running prompt's own
 turns as a list, expresses reuse with a reference turn, and holds turn state
 apart. And its rendering to raw turns is a derivation from the tree, never the
 storage format itself.

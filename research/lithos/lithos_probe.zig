@@ -21,11 +21,11 @@
 
 const std = @import("std");
 const Io = std.Io;
-const harness1 = @import("harness1");
-const lithos = harness1.lithos;
+const run1 = @import("run1");
+const lithos = run1.lithos;
 const chat = lithos.chat;
-const keys = harness1.keys;
-const debug = harness1.debug;
+const keys = run1.keys;
+const debug = run1.debug;
 
 /// A prompt short enough to be cheap and reasoning-eliciting enough that a
 /// model that ignores the off switch has something to think about.

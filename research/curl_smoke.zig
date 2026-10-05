@@ -8,8 +8,8 @@
 
 const std = @import("std");
 const Io = std.Io;
-const harness1 = @import("harness1");
-const curl = harness1.curl;
+const run1 = @import("run1");
+const curl = run1.curl;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     var stdout_buffer: [8192]u8 = undefined;
     var stdout_file = Io.File.stdout().writerStreaming(io, &stdout_buffer);
     const out = &stdout_file.interface;
-    const log = harness1.debug.writer(out);
+    const log = run1.debug.writer(out);
 
     // 1 and 3: an endpoint that serves h2, with h2 required.
     var client = curl.Client.init(gpa, io, .{ .require_h2 = true, .log = log });
@@ -37,9 +37,9 @@ pub fn main(init: std.process.Init) !void {
     // 4: the LithosAI client end to end. A dummy key gets the API's own 401
     //    envelope, which it can only reach over a connection that stayed h2.
     {
-        var lithos = try harness1.lithos.Client.init(gpa, io, "dummy", .{ .require_h2 = true, .log = log });
+        var lithos = try run1.lithos.Client.init(gpa, io, "dummy", .{ .require_h2 = true, .log = log });
         defer lithos.deinit();
-        switch (try harness1.lithos.models.list(&lithos)) {
+        switch (try run1.lithos.models.list(&lithos)) {
             .ok => |parsed| {
                 var p = parsed;
                 p.deinit();

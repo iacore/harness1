@@ -32,10 +32,10 @@
 
 const std = @import("std");
 const Io = std.Io;
-const harness1 = @import("harness1");
-const deepseek = harness1.deepseek;
-const keys = harness1.keys;
-const debug = harness1.debug;
+const run1 = @import("run1");
+const deepseek = run1.deepseek;
+const keys = run1.keys;
+const debug = run1.debug;
 const chat = deepseek.chat;
 
 /// The name the forced tool is declared and chosen under.

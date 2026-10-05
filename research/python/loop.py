@@ -1,10 +1,10 @@
-"""An agent loop in the shape of omp's, on top of harness1.
+"""An agent loop in the shape of omp's, on top of run1.
 
     python3 research/python/loop.py "what is the weather in Kyoto?"
     python3 research/python/loop.py --then "and in Oslo?" "what is the weather in Kyoto?"
     python3 research/python/loop.py --budget 2 "check the weather, the time, and the news"
 
-`harness1.Deepseek.run()` is already a loop. This is the same loop written out,
+`run1.Deepseek.run()` is already a loop. This is the same loop written out,
 because the interesting part of an agent harness is not running tools — it is
 deciding when to stop. The shape is omp's `runLoop`
 (`packages/agent/src/agent-loop.ts`), reduced to its mechanism:
@@ -27,7 +27,7 @@ ways omp bounds a run.
 import argparse
 import time
 
-from harness1 import RUNNABLE, Deepseek, ToolMessage, chunk_reasoning, chunk_text
+from run1 import RUNNABLE, Deepseek, ToolMessage, chunk_reasoning, chunk_text
 
 # `RUNNABLE` is the client's own list — `tool_calls` and `stop`, which omp calls
 # `toolUse` and `stop`. The loop below is what it is for.

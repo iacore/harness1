@@ -1,6 +1,6 @@
 """A DeepSeek chat-completions client for experimenting with prompts.
 
-    from harness1 import Deepseek, SystemMessage
+    from run1 import Deepseek, SystemMessage
 
     def get_weather(city: str) -> str:
         "Report the weather in a city."
@@ -64,11 +64,11 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _DEPRECATED: tuple[str, ...] = ("frequency_penalty", "presence_penalty")
 
 
-class Harness1Error(Exception):
+class Run1Error(Exception):
     """A call that produced no completion."""
 
 
-class APIError(Harness1Error):
+class APIError(Run1Error):
     """The API's own error envelope, as a refusal.
 
     `status` is the HTTP status, and the rest is what the envelope said.
@@ -439,7 +439,7 @@ class Client:
     ) -> None:
         resolved = key if key is not None else api_key()
         if not resolved:
-            raise Harness1Error(
+            raise Run1Error(
                 "no DeepSeek key: pass key=, or set DEEPSEEK_API_KEY, or sign "
                 "in to omp's `deepseek` provider"
             )
@@ -476,7 +476,7 @@ class Client:
         body = dict(request)
         for name in _DEPRECATED:
             if name in body:
-                raise Harness1Error(
+                raise Run1Error(
                     f"{name} is deprecated: the API accepts it and does nothing "
                     "with it, so sending it would change nothing"
                 )
@@ -891,7 +891,7 @@ class Deepseek:
                 continue
             for call in calls:
                 self.append(self.run_tool(call))
-        raise Harness1Error(
+        raise Run1Error(
             f"the model was still calling tools after {steps} turns; "
             "call run() again to carry on"
         )

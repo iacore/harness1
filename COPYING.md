@@ -663,7 +663,7 @@ For more information on this, and how to apply and follow the GNU AGPL, see
 
 ## License notice
 
-harness1 is licensed under the GNU Affero General Public License, **version 3
+run1 is licensed under the GNU Affero General Public License, **version 3
 only**. The "or any later version" option is not taken, so no later version of
 the license applies.
 

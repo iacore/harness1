@@ -40,7 +40,7 @@ editing a turn costs from that turn onward, not the whole conversation.
 
 ## The principle this serves
 
-harness1 busts the prefix cache rather than let a running prompt see stale data — the
+run1 busts the prefix cache rather than let a running prompt see stale data — the
 project principle in `readme.dj`. The measurement above is what makes that
 affordable: an edit invalidates from the edit onward and nothing before it, so
 the price of never serving a stale turn is bounded by where the turn changed.

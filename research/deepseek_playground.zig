@@ -6,14 +6,14 @@
 //!   zig build --build-file ./build.research.zig deepseek_playground
 //!
 //! Type check only:
-//!   zig build-obj --dep harness1 -Mroot=research/deepseek_playground.zig -Mharness1=src/root.zig -fno-emit-bin
+//!   zig build-obj --dep run1 -Mroot=research/deepseek_playground.zig -Mrun1=src/root.zig -fno-emit-bin
 
 const std = @import("std");
 const Io = std.Io;
-const harness1 = @import("harness1");
-const deepseek = harness1.deepseek;
-const keys = harness1.keys;
-const debug = harness1.debug;
+const run1 = @import("run1");
+const deepseek = run1.deepseek;
+const keys = run1.keys;
+const debug = run1.debug;
 
 const prompt = "Hello";
 

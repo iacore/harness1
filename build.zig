@@ -20,13 +20,13 @@ pub fn build(b: *std.Build) void {
     if (b.root.access(b.graph.io, "app/main.zig", .{})) |_| {
         b.dependOnDirectoryContents(b.path("app"));
         const exe = b.addExecutable(.{
-            .name = "harness1",
+            .name = "run1",
             .root_module = b.createModule(.{
                 .root_source_file = b.path("app/main.zig"),
                 .target = target,
                 .optimize = optimize,
                 .imports = &.{
-                    .{ .name = "harness1", .module = mod },
+                    .{ .name = "run1", .module = mod },
                 },
             }),
         });
@@ -61,7 +61,7 @@ pub fn build(b: *std.Build) void {
 /// libcurl, and a consumer of the package has to have both. The header reaches
 /// Zig through translate-c, since 0.17 removed `@cImport`.
 pub fn harnessModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
-    const mod = b.addModule("harness1", .{
+    const mod = b.addModule("run1", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .link_libc = true,
@@ -87,7 +87,7 @@ pub fn installOmpKeys(b: *std.Build) *std.Build.Step.InstallFile {
     return b.addInstallFileWithDir(
         b.path("src/remote/omp-keys.py"),
         .lib,
-        "harness1/omp-keys.py",
+        "run1/omp-keys.py",
     );
 }
 
