@@ -1,0 +1,84 @@
+# World model types
+
+The value vocabulary the world model holds. Where those values live — nodes,
+offsets, pages, the store — is `research/persistence.dj`'s business. What a value
+*is* is this file.
+
+## Ion's data model, without Ion's serialization
+
+Amazon Ion is a *serialization format*: a set of data types, a textual notation
+and a binary notation for them, "semantically isomorphic" across the two.
+<https://amazon-ion.github.io/ion-docs/>
+
+We take the data model — the types — and neither notation, because the data is
+used foremost in memory: the in-memory structure is the model and the file is a
+rendering of it (`research/persistence.dj`). An encoding chosen for a stream
+(length-prefixing, symbol tables, text escapes) is not one chosen for a mapped
+image, so nothing below is about bytes.
+
+## The types
+
+Ion's model is "a set of primitive types and a set of recursively-defined
+container types", every type supporting a null and user-defined annotations.
+
+| type | spec | shape in memory |
+| --- | --- | --- |
+| `null` | one typed null per type, plus bare `null` | a null variant per tag |
+| `bool` | true / false | bit |
+| `int` | signed, arbitrary size | `i64` fast path, bignum variant |
+| `float` | IEEE-754 binary, 32 or 64 bit | `f32` or `f64` |
+| `decimal` | arbitrary precision, coefficient + exponent; trailing zeros significant; negative zero distinct | coefficient + exponent + sign |
+| `timestamp` | year to fractional second, arbitrary precision; local offset required with time; `-00:00` means unknown offset | precision tag, fields, offset |
+| `string` | Unicode text | UTF-8 bytes |
+| `symbol` | interned, case-sensitive Unicode atom | a symbol-table id |
+| `blob` | arbitrary bytes | bytes |
+| `clob` | 7-bit-ASCII text with an application-declared encoding | bytes plus a charset — see below |
+| `list` | ordered, heterogeneous | ordered child offsets |
+| `struct` | unordered symbol-to-value pairs; repeated names preserved; readers may reorder | ordered fields — see below |
+| `sexp` | ordered; "Ion does not define their interpretation" | ordered children — see below |
+
+## Annotations are the tag
+
+Any Ion value may carry an ordered list of annotation *symbol tokens* — "they do
+not have annotations themselves" — applied as `tag::value`. This is exactly the
+"a record has to say what it is — a tag and a version" of
+`research/persistence.dj`, carried by the model rather than by an encoding: a
+record's kind is an annotation, its version another, and both are interned ids.
+
+## The one type Ion does not have
+
+Ion's model is *value-based* and has no references: the spec says the data model
+"does not include references" and that it "can express data hierarchies (we can
+nest things to arbitrary depth), but not general directed graphs". The world is a directed
+graph: a fork records its fork point on both sides and neither is complete alone
+(`research/agent-world.dj`), and running prompts reference each other's turns
+(`research/turns.dj`). So the model needs one kind Ion's set lacks — a
+*reference*, an id or offset naming another node — and the world model is Ion's
+types plus that.
+
+It is also the kind the store needs anyway: a node names another by offset
+(`research/persistence.dj`), so the value kind and the addressing scheme are the
+same thing.
+
+## What we drop, and why
+
+- *`clob`.* It exists to carry non-UTF-8 text through a text format; with
+  `string` being UTF-8 and `blob` being bytes, it is a third way to say one of two
+  things. Kept only if a tool needs a declared non-UTF-8 charset.
+- *`sexp`.* No semantics by construction, so it is a `list` with another tag
+  unless something consumes expressions. Dropped until one does.
+- *`struct`'s looseness.* Ion's struct is unordered, permits repeated field
+  names, and lets readers reorder. A durable record wants a stable order and
+  unique names, so the container is taken and the looseness dropped.
+- *`float` and `decimal` both stay* only if the world carries exact reals; if it
+  does not, `decimal` goes and `float` is the one real type.
+- *Arbitrary-precision `int`* is Ion's, so every integer node carries a bignum
+  path; the `i64` fast path is the mitigation, not a removal.
+- *Typed `null`* is kept: a null variant per tag, not one null, because the
+  distinction *is* the type.
+
+## The result
+
+A closed set — Ion's tags with their precision semantics, minus `clob` and `sexp`
+unless needed, plus a reference. That is a Zig tagged union, and the union is the
+schema (`research/persistence.dj`).

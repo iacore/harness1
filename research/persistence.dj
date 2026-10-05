@@ -1,293 +1,72 @@
 # Online Network Database Manager
 
-This file is technical only. It does not touch on the theoretical experience that agents have.
+How the world (`research/world.dj`) is made durable. Data persistence only: the
+file, and the rules that keep it readable.
 
-The database component the server owns: the data on disk and in memory, as one
-thing rather than two. It is ours, not an embedded engine. Three premises shape
-the format.
+## What we specify
 
-## The kernel never crashes
+- *One file, mapped.* `MAP_SHARED` on a btrfs file. The mapped region is memory
+  and can be paged off partially; references are offsets, not addresses, because
+  the mapping lands somewhere new each run.
+- *Framed and checksummed per unit*, so a unit's extent and integrity are knowable
+  without reading what precedes it.
+- *Checked at open.* Decode every unit into the type when the store opens. An
+  unknown tag, version or payload type *aborts* the open; a failed checksum is
+  *damage*, and the unit is skipped and reported.
+- *A mutation publishes with a single store*, from a power-safe overwrite: the
+  store assumes an aligned store lands entirely or not at all, so a new payload is
+  written elsewhere and published with one store, and a variable-length record is
+  never rewritten in place.
+- *Compaction only at the edges*, never in the middle of a run.
 
-A `write(2)` that returns has its bytes in the page cache, and the kernel will
-write them out. A process that dies and is restarted sees them. So *process-crash
-durability needs no `fsync`* and no direct-I/O dance — the syscall returning is
-enough.
+## Prior art
 
-What this does not remove is the process dying at an arbitrary instruction, so
-the format has to tolerate a *torn tail*: a record half-written when the
-process was killed. That is the one crash case that remains, and it is a
-formatting problem rather than a durability one.
+- `research/persistence-protobuf.dj` — the record that says what it is; gives the
+  record, not the store.
+- `research/persistence-pmdk.dj` — Intel's PMDK, the closest prior art, dead.
+- `research/persistence-object-stores.dj` — the persistent-object-store line, and
+  where the offset-pointer, publish and check-at-open mechanisms come from.
 
-## Corruption is local
+## The rest — the principles behind the constraints, and what is open
 
-A corrupted unit must not take the rest with it. This decides the format more
-than the other two premises:
+None of these is a device guarantee; they are the reasoning above the rules, kept
+last.
 
-- *Frame every unit* — length-prefixed or fixed-size — so a unit's extent is
-  knowable without reading what precedes it.
-- *Checksum every unit*, header and payload. Without it, corruption is silent
-  wrongness; with it, it is a detected miss that can be skipped.
-- *No whole-file index.* If finding anything requires one global block, then one
-  bad block loses the store. Chunk the index and make it rebuildable from the
-  data, or replicate it.
-- *Append-mostly, and truncate the tail on open.* The torn last record is the
-  common case, not the exotic one, so recovery is dropping it and carrying on.
-- *Recover per unit, not per open.* Opening skips a *damaged* unit and reports
-  it, so one bad block never makes everything unusable — which is exactly the
-  non-local impact being ruled out. Damage is the one case this tolerates; an
-  intact unit this build cannot decode aborts the open (*The type model, and the
-  check at open*).
+*The kernel never crashes.* A `write(2)` that returns has its bytes in the page
+cache, and the kernel writes them out, so process-crash durability needs no
+`fsync`. What remains is the process dying mid-instruction, so the format has to
+tolerate a torn tail — a formatting problem, not a durability one.
 
-The pairing that makes this cheap: no `fsync` and per-unit checksums together
-give up the guarantee between writes and get it back per record.
+*Corruption is local.* A corrupted unit must not take the rest with it: frame and
+checksum every unit, keep no whole-file index, truncate the tail on open, and
+recover per unit — skip a damaged unit and report it, never fail the file. The
+pairing that makes this cheap: no `fsync` and per-unit checksums give up the
+guarantee between writes and get it back per record.
 
-## Compaction happens at the edges
+*Persistent and in-memory are one thing.* The world (`research/world.dj`) is the
+model and the file is a rendering of it; reads are pointer-chases and durability
+is an output.
 
-On-disk data is compacted when the server starts and when it stops — never in the
-middle.
+*Compaction happens at the edges.* On-disk data is compacted when the server
+starts and when it stops. Between those edges the writer only appends; a mid-life
+move would let the same bytes mean two things depending on when they were read.
 
-Between those edges the writer only appends, so a running server has a single
-writer and nothing to coordinate. A compaction in the middle would move units that
-readers are using, and that is exactly where a fault stops being local: the same
-bytes would mean two things depending on when they were read. At an edge there is
-no one to confuse — the server is starting, or it is finished.
+*One file per running prompt, forked with it.* A candidate layout — one file per
+running prompt, copied on fork — fits everything above, but a copy is a snapshot,
+so a reference into the original's later turns cannot be answered from it. It was
+written before the world was fixed as global and unique (`research/agent-world.dj`);
+if there is one record, the layout has to be re-answered.
 
-## Persistent and in-memory are one thing
-
-The in-memory structure *is* the model and the file is a rendering of it, so the
-format question is how to write that structure down and read it back, not how to
-design a schema on disk. Reads are pointer-chases; durability is an output.
-
-## One file per running prompt, forked with it
-
-This was written before the world model was fixed as global and unique as one
-(`research/agent-world.dj`). If there is a single record, a fork cannot be a copy
-of a whole file belonging to one prompt, and the question below is what has to be
-re-answered rather than the layout being chosen from it.
-
-A candidate layout: one file per running prompt, and a fork *copies* it, so the fork's file
-is its parent's as of that moment and the two diverge independently afterwards.
-
-It fits everything above — each file has a single writer, compaction stays at the
-edges, and a fork costs a copy rather than a rewrite. It also gives the fork
-something the turn model wants: the new running prompt begins with its parent's turns in
-place, not with a reference it has to chase on every read.
-
-What it does not give is the other direction. Running prompts have to be able to reference
-each other's turns (`research/turns.dj`), and a copy is a snapshot — a reference
-into the original's *later* turns cannot be answered from the fork's copy. So
-either a reference always resolves against the file it names, whichever file the
-reader forked from, or the fork is not a copy at all but a shared file that
-separates only when written.
-
-## Schema evolution and mutability
-
-Two requirements that rule out the simple shapes.
-
-*Every record carries its own version.* A turn's shape follows the tool set, so a
-record has to say what it is — a tag and a version — and a reader decodes the tags
-it knows and refuses an open that holds one it does not. Nothing is decoded by position
-and no reader assumes a fixed layout, or every schema change becomes a migration of
-every record instead of a new tag. This is what keeps evolution cheap in the one
-direction that is safe: an old record stays readable as it is, because the reader
-keeps a decoder for its version, and only derived data (an index, a cache) is ever
-rebuilt. It is not a licence to write a version no reader knows — an unknown tag
-aborts the open, so a new tag ships with the reader that decodes it.
-
-*Turns are mutable*, so the file is append-mostly rather than write-once.
-Rewriting a variable-length record in place is where locality of corruption is
-lost: a partial rewrite leaves a record that is neither the old value nor the new
-one, and no checksum can say which half survived. An update therefore writes a
-*new* payload elsewhere and then publishes it with a single store, so a reader
-sees either the old record or the new one and never a mixture. The old payload is
-garbage until the edge — which is the second reason compaction lives at the edges
-rather than mid-life, and the reason it must not run while readers hold pointers.
-
-## Protobuf
-
-The record-shape problem above — a record that says what it is, so a reader
-decodes what it knows and can tell what it does not — is what Protocol Buffers
-already solves, and its wire format is worth copying whether or not the library
-is used. <https://protobuf.dev>
-
-*A message is a series of key-value records.* Each record is a field number, a
-wire type, and a payload, and the tag encodes the first two as
-`(field_number << 3) | wire_type` in a varint. The low three bits say how to find
-the payload's end; the rest say which field it is. There are six wire types, four
-of them in use — `VARINT` (integers, bools, enums), `I64` and `I32` (fixed-width),
-and `LEN` (strings, bytes, submessages, packed repeats).
-
-*That is the whole of schema evolution.* Because the wire type carries the length,
-a reader that has never heard of field 9 can still find its end exactly, so it
-knows *that* it cannot read the record rather than guessing wrong — and an
-unknown field aborts the open, which is the safe reading of not knowing. Nothing
-is decoded by position, and nesting costs nothing extra because submessages are
-`LEN` records recursively.
-
-What the format insists on, from its own best-practices page:
-
-- Never re-use a tag number, and reserve the numbers of deleted fields.
-- Never change a field's type, and never add a required field.
-- Add enum values rather than changing them; never change a field's default.
-- Repeated-to-scalar loses data; scalar-to-repeated does not.
-- Binary for interchange, text format for humans only.
-- Never rely on serialization stability across builds: the same message can
-  serialize to different bytes, so those bytes are not a key.
-
-Limits worth knowing: a serialized message must be under 2 GiB, and unmarshaling
-depth is capped — 100 in Java and C++, 10000 in Go, with a plan to reduce it.
-
-What protobuf gives us is the *record*, not the store. It has no notion of
-mutation, no checksum, no framing of records into a file, and no index — so the
-per-unit checksums, the torn-tail truncation and the edge-only compaction above
-are all outside it, and its own answer to mutation is "write a new message". Its
-one piece of advice that maps onto this project directly is to keep API messages
-and storage messages apart, which is the same split as abstract and raw turns
-(`research/turns.dj`).
-
-Where it is worth having, and where it is not:
-
-- *The seam, yes.* The socket between client and server carries turn
-  modifications (`research/linux-process.dj`), which is exactly a versioned,
-  language-neutral binary protocol, and `Any` carries an arbitrary message with a
-  type URL for the part whose shape is not known in advance. The sibling project
-  draws the line in the same place: `omp2` keeps protobuf in
-  `crates/proto/proto/omp/*` and in the RPC-side crates (`envd`, `driver`,
-  `gateway`, `inference`, `collab`), while `crates/dom`, its session tree,
-  serializes with JSON — protobuf between components, a readable format for the
-  model.
-- *The store, no.* Everything the sections above ask of the store is outside
-  protobuf — no checksum, no framing of records into a file, no index, and no
-  mutation.
-- *The payload, no.* A tool set that changes while the agent runs cannot be a
-  compiled message, so a record's body is a tag plus opaque bytes, and protobuf
-  degrades into the container around them, discarding the typing it was chosen
-  for. The type section below reaches the same conclusion from the other end: the
-  schema is the Zig type, and there is no `.proto` to drift from the code.
-
-Practically, `protoc` is installed on this machine, and every Zig implementation
-is a dependency — nothing here declares one.
-
-*Redaction is not a serialization problem.* `research/agent-world.dj` requires
-that a redaction destroys: the old value has to be gone rather than superseded,
-and the destruction has to reach every fork that copied it. No encoding does that,
-and protobuf has two properties pushing the wrong way — unknown fields are
-preserved in binary serialization, so a value can survive a round trip through a
-layer whose schema never knew it, and serialization is eager while the history is
-append-only, so the bytes remain in every earlier record and every copy. "Gone"
-has to be engineered at the store level, by destroying a key the ciphertext
-depends on or by rewriting the units; a format can only fail to help.
-
-## What the kernel already provides
-
-A file is an abstraction, and the thing underneath it here is the page cache.
+*What the kernel already provides.* The thing under a file is the page cache, and
 `mmap` with `MAP_SHARED` is the interface to it: the mapped region *is* memory,
-stores to it are loads and stores, and the kernel is the writer. Given that the
-kernel never crashes, a store that has happened is durable — no `msync`, no
-`fsync`, no write syscalls. That is as close to a persistent in-memory data
-structure as Linux gets without hardware.
+stores are loads and stores, and the kernel is the writer. This machine has no
+pmem/DAX and no hugetlbfs, and the root filesystem is btrfs, so `FICLONE` makes a
+copy O(1) and copy-on-write. So the shape is `MAP_SHARED` on a btrfs file:
+pointer-addressable, kernel-written, cheap to fork. The kernel offers no per-unit
+integrity, so "corruption is local" is entirely our own checksums over our own
+layout.
 
-What else is on the table, and what this machine actually has:
-
-- *tmpfs, `shm_open`, `memfd_create`* — a file object that is memory and can be
-  shared, but not persistent: it dies with the last reference or the reboot.
-  `/tmp` and `/run` here are tmpfs, so a runtime-directory file is one of these,
-  and durable data cannot live there.
-- *Persistent memory (DAX)* — `mmap` on a pmem device gives load/store access with
-  no page cache, and `MAP_SYNC` makes a store durable without `msync`. This
-  machine has none: no `/dev/pmem*`, no `nd` bus.
-- *hugetlbfs and `MADV_HUGEPAGE`* — larger pages for the mapping. It buys TLB
-  reach, not persistence. No hugetlbfs is mounted; tmpfs here is `huge=advise`.
-- *Pinned eBPF maps* (`BPF_F_MMAPABLE` on bpffs) — a kernel-owned structure that
-  outlives the process and can be mapped. Real, but fixed-size arrays only rather
-  than a general store, and bpffs is not mounted here.
-- *A raw block device* — you would own the layout and lose the page cache, which
-  is the part doing the work.
-- *`FICLONE` (reflink)* — not a store, but the root filesystem here is btrfs, so
-  copying a file is O(1) and diverges copy-on-write. That is exactly the cheap
-  fork the section above was looking for.
-
-So the shape to build on is `MAP_SHARED` on a btrfs file: pointer-addressable,
-kernel-written, and cheap to fork. Two consequences follow. The kernel offers no
-per-unit integrity, so "corruption is local" is entirely our own checksums over
-our own layout. And a record is written by a sequence of stores rather than one
-syscall, so a torn tail is a sequence that stopped — which the checksum and the
-truncate-on-open already cover.
-
-## The type model, and the check at open
-
-Well-typed is a property of the model, not of the encoding. JSON, Ion and the
-protobuf wire format above all say what bytes look like; none says what a value
-*is*. A schema does — a closed set of record types, each with declared fields,
-ranges and references, and a decoder that accepts a value only when it fits one.
-Schemaless JSON accepts anything; Ion is typed at the scalar level (timestamp,
-decimal, blob, symbol); protobuf is typed at the field level but its schema lives
-in a `.proto` beside the code. None of the three is strict on its own, so
-"stricter" is not a fourth format: it is an application schema, and it is a
-decision separate from which encoding carries the bytes.
-
-That schema is the Zig type. The in-memory structure is the model, so the model
-is a closed set of tagged unions — a record is a tag, a version and a payload —
-and those declarations *are* the schema. There is no IDL and no `.proto` to drift
-from the code, which is the pattern `src/omp_features.zig` already uses for the
-feature vocabulary and `src/json_encoder.zig` for driving an encoding from
-per-type declarations rather than a method per type. A new tag is a new variant;
-a reader decodes the tags it knows and aborts the open on one it does not, which
-is the one piece of the protobuf section worth keeping whatever carries the
-bytes.
-
-The check runs at open, and it is the load. Decoding every unit into the type is
-what builds the in-memory model from the file, so there is no separate pass to
-forget: open = drop the torn tail = decode every unit = the model. What open does
-with a unit it cannot read splits on the checksum, the only thing that tells
-*damage* from *difference*:
-
-- *The checksum fails.* The unit is damaged: it is skipped and reported, and the
-  open continues (*Corruption is local*).
-- *The checksum holds, but the tag, the version, or the payload's declared type
-  is one this build does not know.* The unit is intact and this build is simply
-  the wrong one for it. The open *aborts*. Skipping here would be worse than
-  failing: the value is real, and the next thing a running server does with a
-  store it only half-read is compact it — deleting exactly what it skipped.
-
-What this covers is the structure, not the words. Tags, versions, ids, references
-and offsets are typed and checked; the payload of a tool result or a message is
-bytes by nature, typed as exactly that and opaque inside. Strictness is over the
-shape a record has, not over what a tool put in it.
-
-A type error therefore cannot reach the middle of a run. Writes emit typed values
-because writes are code, not untrusted input, so a type error on disk has only
-two sources: corruption, which the per-unit checksum catches, and a schema
-version, which the tag decides to decode or refuse. The open-time decode catches
-both before the server serves, and every value it then holds passed that same
-decode. The start edge is one pass, not two — drop the torn tail, decode every
-unit into the model, then compact by writing the validated model back out — and
-compaction there cannot reintroduce a type error, because it writes from the
-model that just passed the decode.
-
-Two spines are on the table and they cannot both hold, and that is what decides
-the encoding rather than the typing question above:
-
-- *The mapped region is the memory image* (*What the kernel already provides*).
-  The bytes *are* the typed values, so there is no decode and no serialization —
-  and therefore no JSON, Ion or protobuf as the store, only as an export. The
-  open-time check is then a structural scan: every discriminant a known tag,
-  every offset in range, every checksum valid.
-- *The file is a serialization decoded at open* (*Persistent and in-memory are
-  one thing*, and the protobuf section). Then the bytes are a text or protobuf
-  rendering and the check above is a decode into the Zig types — a decode step
-  and two representations rather than one.
-
-The doc's own rule from the protobuf section — binary for interchange, text for
-humans only — already rules out JSON or Ion as the store under either spine; as
-an export format they are unconstrained. Which spine this is decides everything
-downstream and is not yet decided.
-
-## What this holds
-
-The turns and their state (`research/turns.dj`) are the payload, so the durable
-form of a turn is this component's question rather than the turn model's.
-
-It is the *abstract* turn that is stored. How an abstract turn renders into a
-*raw* turn is the turn model's business and not this component's: the store holds
-the shape, and the rendering is a derivation from it that happens elsewhere.
+*Two spines, unresolved.* Either the mapped region *is* the memory image — the
+bytes are the typed values, no decode, and no JSON/Ion/protobuf as the store —
+or the file is a serialization decoded at open. Which one this is decides the
+encoding, and it is not yet decided.

@@ -1,0 +1,69 @@
+# Persistent memory (PMDK)
+
+Intel's Persistent Memory Development Kit: the closest prior art to the store in
+`research/persistence.dj`, and dead. Referenced from there.
+
+It built a transactional object store in persistent memory — a mapped file you
+allocate from and pointer-chase, the shape `research/persistence.dj` chooses — on
+the SNIA NVM Programming Model. <https://pmem.io/pmdk/>
+
+*What it did.*
+
+- *A pool is a heap.* `pmemobj_create` makes a pool (a file, or a pool set across
+  devices, `posix_fallocate`d to size) and `pmemobj_open` maps it; you allocate
+  from it with `pmemobj_alloc`, never `malloc`. The library's own overhead is
+  "approximately 4-8 kilobytes for each memory pool in use", and allocation is
+  aligned to a cache line.
+- *Pointers are offsets.* A `PMEMoid` is a persistent pointer — a pool id and an
+  offset, not an address — because "persistent memory regions are mapped into
+  different addresses on each system instantiation". A typed `TOID` carries a
+  compile-time type as well. This is the "references are offsets" constraint.
+- *A root object is how open finds the structure.* `pmemobj_root` hands back the
+  root; nothing is found by scanning.
+- *Open is gated on a layout name.* `pmemobj_create`/`pmemobj_open` take a
+  `layout` string, "not interpreted by libpmemobj, but may be used as a check":
+  open fails if it does not match the pool. That is the shape of the
+  abort-on-an-unknown-tag in `research/persistence.dj`, at coarse grain.
+- *Transactions.* `TX_BEGIN`/`TX_END`; `pmemobj_tx_add_range` snapshots old bytes
+  for rollback, and `pmemobj_tx_alloc` "postpones persistent memory modifications
+  to the commit phase", so a torn or aborted transaction is "entirely completed
+  or discarded".
+- *Publish.* `pmemobj_publish` / `pmemobj_action` is the delayed single-store
+  publication of a prepared change — the store `research/persistence.dj` asks
+  for. The mechanism, from its own example, is reserve, populate and persist
+  without touching persistent state, then make a set of actions visible together:
+  "The publication is fail-safe atomic in the scope of the entire collection of
+  actions."
+- *Defrag is compaction.* `pmemobj_defrag` relocates objects and atomically
+  updates the pointers given to it, and the manual requires *all* pointers to an
+  object be supplied, "so, even in the presence of failures, all pointers to the
+  object will either point to the old or a new location". That is the mid-life
+  move hazard `research/persistence.dj` names, and the edge pass is its
+  mechanism.
+- *A consistency check at rest.* `pmemobj_check` is a read-only check; a pool it
+  finds inconsistent "will result in undefined behavior" if used. Startup
+  validation, with the library's own definition of consistent.
+
+*What does not transfer.*
+
+- *The dependency is gone.* Intel wound down Optane in 2022 and PMDK feature
+  development with it; `github.com/pmem/pmdk` is archived to `daos-stack/pmdk`,
+  and `libpmemobj-cpp` states "no further support or maintenance planned". A
+  design to copy, not a library to link.
+- *It wants hardware this machine lacks.* DAX — load/store without paging — is
+  the point, and it is the pmem tier `research/persistence.dj` rules out.
+- *Its flush discipline is its own.* On pmem a store is not durable until flushed
+  and fenced, and libpmemobj does that, choosing `pmem_persist` or `msync` by
+  whether the pool is pmem or a regular file. Here the pool is a regular file
+  behind the page cache, where the kernel orders and writes back, so no explicit
+  flush is needed — the premise at the top of `research/persistence.dj`. Same code
+  shape, opposite flush story, because the tier differs.
+- *Bad blocks are a surface.* Opening a pool with bad blocks can be aborted by
+  `SIGBUS` unless `CHECK_BAD_BLOCKS` is set. That is exactly the "corruption is
+  local" problem the kernel does not solve; our answer is per-unit checksums and
+  skip, not a signal.
+
+*What to take:* the pool-as-heap, offset `OID`s with typed pointers, the root
+object, the layout gate at open, transactional undo with deferred publish, and
+defrag-at-the-edges — which is the compaction in `research/persistence.dj`, and
+the reason it must not run while readers hold pointers.

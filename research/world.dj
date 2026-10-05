@@ -1,0 +1,37 @@
+# The world
+
+The single in-memory structure that holds the world model
+(`research/agent-world.dj`). Global and unique: there is one, not one per running
+prompt. Its value types are `research/world-model-types.dj`; how it is made
+durable is `research/persistence.dj`'s business. The component is `src/world.zig`.
+
+## A graph of typed nodes
+
+The world is a graph of typed nodes. A node names another by *offset* into the
+structure, and the root is an Ion `struct`. The types are the closed set in
+`research/world-model-types.dj` — Ion's tags plus a reference — and the schema is
+the Zig type, not a `.proto` or an `.isl`. Every node carries its own tag and
+version; a tag number is never reused and a field's type never changed, so a
+reader decodes the tags it knows and refuses an open that holds one it does not.
+
+## What it holds
+
+The abstract turn and its state (`research/turns.dj`). Rendering an abstract turn
+into a raw turn is the turn model's business and not the world's: the world holds
+the shape, and the rendering is a derivation from it that happens elsewhere.
+
+## Reading and writing
+
+Read and write the root struct, or any struct, by field: get, put, remove. A put
+that fits an existing node updates it and publishes with a single store; a put
+that changes size writes a new node elsewhere and publishes it with one store. A
+variable-length node is never rewritten in place — that is where locality of
+corruption is lost (`research/persistence.dj`).
+
+## Forks and redaction
+
+A fork records its fork point on both sides, and neither side is complete alone
+(`research/agent-world.dj`). References name a node by offset, so a reference into
+another running prompt's turns resolves against the node it names. A redaction has
+to destroy a value rather than supersede it, and it has to reach every fork that
+copied it.

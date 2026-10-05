@@ -1,0 +1,157 @@
+# Persistent object stores
+
+Prior art for the store `research/persistence.dj` describes. The design has a
+name — *orthogonal persistence*, a *persistent object store* or *object memory* —
+and a long line of implementations, so most of its hard parts have been met
+before. Grouped by what each teaches, with the code read where code was
+available.
+
+## The direct ancestor: ObjectStore and QuickStore
+
+A 1990s OODBMS pair, and the closest ancestor of "the bytes are the image and a
+reference is an offset": persistent pointers "are stored as normal C++ memory
+refs — *even on disk*". Reading a page faulted its objects in by mapping the disk
+page into the address space and fixing the pointers — *pointer swizzling*. Each
+page carried a *meta-object* with two tables: a *mapping object* of every pointer
+leaving the page `(virtual address, disk address)`, and a *bitmap object* of where
+the pointers sit inside the objects. A page was access-protected until the first
+read; the read fetched the mapping object, mapped the pages it named (reusing the
+old frame if free), and swizzled. Concurrency was page-level locking; the log was
+page diffs.
+
+The mapping object is the outgoing-ref set a compaction pass rewrites, and
+swizzle-on-fault is what an offset dereference buys once the base is known.
+
+## libpmemobj
+
+Recorded in `research/persistence.dj`; the piece worth adding is its *publish*,
+which makes the single-store publication concrete. Actions are *reserved* without
+touching persistent state, populated and persisted, then made visible together:
+
+```c
+PMEMoid tail = pmemobj_reserve(pop, &actv[0], sizeof(struct list_node), 0);
+...
+pmemobj_set_value(pop, &actv[2], &D_RO(root)->head.pool_uuid_lo, head.pool_uuid_lo);
+pmemobj_set_value(pop, &actv[3], &D_RO(root)->head.off, head.off);
+pmemobj_publish(pop, actv, 4);
+```
+
+"The publication is fail-safe atomic in the scope of the entire collection of
+actions." Note the types: an OID is a *pool id and an offset*, and the root is a
+single OID.
+
+## Boost.Interprocess `offset_ptr`
+
+The offset pointer, as used. Its storage is a union holding the distance from the
+pointer's own address to the pointee — `OffsetType m_offset; //Distance between
+this object and pointee address` — with a static assert that the offset type is an
+unsigned integer of at least `uintptr_t`. So "a reference is an offset" is not a
+metaphor: it is a self-relative distance, which is exactly what a relocatable
+memory image needs.
+
+## bbolt
+
+Not a graph store, but the mmap mechanics in readable form: `db.mmap(minsz)` maps
+the single file, and the mapped size "is 32KB and doubles until it reaches 1GB",
+re-mapped as the file grows, over a page-addressed copy-on-write B+tree. Its value
+here is the growth policy and the fact that the entire store is one file and one
+mapping.
+
+## ZODB
+
+A living object graph. `persistent/cPersistence.c` and `interfaces.py` carry the
+object state machine a mapped object store needs: GHOST (-1), UPTODATE (0),
+CHANGED (1), STICKY (2), with `_p_oid`, `_p_jar`, `_p_changed`, `_p_serial`,
+`_p_state`; "persistence by reachability" from a root; `_p_deactivate` to drop an
+object's state (become a ghost) and `_p_invalidate`. Two lessons fall out:
+
+- An object is materialized and dematerialized many times, so a persistent class
+  must not have a `__del__`: there "isn't a meaningful relationship between when
+  a persistent object's `__del__` gets invoked and any natural aspect of a
+  persistent object's life cycle".
+- The root is a distinguished OID: "the 8-byte string consisting of 8 NUL bytes …
+  is reserved to identify the database root object".
+
+ZODB serializes with pickle, so it is the semantics, not the mechanism.
+
+## Smalltalk images
+
+The purest form of the idea: the whole object memory *is* the file. A reader reads
+a header — Spur's is `imageFormat`, `imageBytes`, `startOfMemory`,
+`specialObjectsOop` — then walks the heap. A Spur object header is one 64-bit word
+carrying a 22-bit class index, a 5-bit format, a slot count and
+mark/immutable/pinned bits, and the formats already distinguish pointer, byte,
+word, short and compiled-method objects. The validator for those images
+(`validate_smalltalk_image`) is the open-time check this project wants:
+
+- errors — `heap.objectOverflow`, `alignment.misaligned`, `oop.invalidPointer`
+  ("not immediate, not in heap"), `oop.notObjectStart` ("targets mid-object, not
+  a header"), `classTable.missingClass`, `specialObjects.outOfRange`;
+- warnings — `format.reserved`, `freeChunk.nonZeroFormat`,
+  `reachability.unreachable`;
+- always reported — total objects, heap utilization, free chunks, largest object.
+
+That is a whole-heap structural scan with per-object format typing: the model for
+the check-at-open, one vertex per node rather than per unit.
+
+## The PM libraries with no public code
+
+- *NV-Heaps* — persistent objects, "specialized pointer types, a memory
+  allocator, and atomic sections"; type-safe persistent pointers and
+  reference-counted GC.
+- *Mnemosyne* — lightweight persistent memory: persistent pointers and
+  transactions.
+- *Pangolin* — a fault-tolerant persistent *object* library: checksums plus
+  parity plus micro-buffering per object, ~1% overhead for GB pools, with online
+  detection and recovery. The per-unit-checksum idea, at object granularity.
+- *Puddles* (EuroSys 2024) — the closest statement of the goal: PM data should be
+  "mappable into a process address space, shareable across processes, shippable
+  between machines, consistent after a crash, and accessible to legacy code with
+  fast, efficient pointers"; "application-independent recovery", where recovery
+  is a property of the data rather than of the programs that access it; and no
+  serialize/deserialize to share. Its premise is that mmap load/store alone could
+  not deliver all of these "due to conflicting requirements" — the wall
+  `persistence.dj` keeps meeting.
+
+Code for these four was not located; they are read as papers only.
+
+## Living and adjacent
+
+- *GemStone/S* — a multiuser, transactional Smalltalk object memory; one shared
+  object graph, decades in production.
+- *MapDB*, *Chronicle Map* — off-heap, memory-mapped, typed containers shared
+  across processes: the mmap-shared mechanics without the graph.
+- *CXL object stores* (Clove, cxlalloc) — object-level management of shared
+  byte-addressable memory: the hardware future for one world mapped by many
+  readers, with its own failure model.
+
+## What to take, and the gap
+
+Take the offset pointer as a self-relative distance (Boost); publish of a
+reserved, persisted set of actions as one atomic step (libpmemobj); an object
+state machine with an explicit ghost state (ZODB); the whole-heap typed
+structural scan as the open-time check (Spur's validator); checksums at object
+granularity with parity for recovery (Pangolin); and the mapping-object/bitmap
+model of where a unit's references are, which is what a compaction pass rewrites
+(ObjectStore).
+
+The gap none of them fills is a **shared, multi-writer, single global graph**. The
+OODBMS and PM libraries are single-process; GemStone is multiuser through a
+server, not a shared mapping; the shared-map cases are WhiteDB and the Java
+off-heap maps, and the forward-looking one is CXL. Several running prompts
+mapping one world at once is the part with the least prior art.
+
+## Sources
+
+- ObjectStore/QuickStore, pointer swizzling: <https://dsf.berkeley.edu/jmh/cs262b/swizzle.html> , <https://pages.cs.wisc.edu/~dewitt/includes/oodbms/quickstore.pdf>
+- libpmemobj publish: <https://raw.githubusercontent.com/pmem/pmdk/master/doc/libpmemobj/pmemobj_action.3.md>
+- Boost `offset_ptr`: <https://raw.githubusercontent.com/boostorg/interprocess/develop/include/boost/interprocess/offset_ptr.hpp>
+- bbolt mmap: <https://raw.githubusercontent.com/etcd-io/bbolt/master/db.go>
+- ZODB: <https://raw.githubusercontent.com/zopefoundation/persistent/master/src/persistent/cPersistence.c> , <https://raw.githubusercontent.com/zopefoundation/persistent/master/src/persistent/interfaces.py>
+- Spur image header and checks: <https://raw.githubusercontent.com/avwohl/validate_smalltalk_image/main/src/SpurHeader.hpp> , <https://raw.githubusercontent.com/avwohl/validate_smalltalk_image/main/docs/validation_checks.md>
+- NV-Heaps: <https://cseweb.ucsd.edu/~swanson/papers/Asplos2011NVHeaps.pdf>
+- Pangolin: <https://arxiv.org/abs/1904.10083>
+- Puddles: <https://arxiv.org/abs/2310.02183>
+- GemStone/S: <https://dbdb.io/db/gemstones>
+- ZODB programming guide: <https://zodb.org/en/latest/articles/old-guide/prog-zodb.html>
+- CXL shared memory: <https://arxiv.org/pdf/2405.19626>

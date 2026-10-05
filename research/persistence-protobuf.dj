@@ -1,0 +1,79 @@
+# Protobuf
+
+Prior art for the record shape: how a record says what it is, so a reader decodes
+what it knows and can tell what it does not. Referenced from
+`research/persistence.dj`.
+
+The record-shape problem — a record that says what it is, so a reader decodes what
+it knows and can tell what it does not — is what Protocol Buffers already solves,
+and its wire format is worth copying whether or not the library is used.
+<https://protobuf.dev>
+
+*A message is a series of key-value records.* Each record is a field number, a
+wire type, and a payload, and the tag encodes the first two as
+`(field_number << 3) | wire_type` in a varint. The low three bits say how to find
+the payload's end; the rest say which field it is. There are six wire types, four
+of them in use — `VARINT` (integers, bools, enums), `I64` and `I32` (fixed-width),
+and `LEN` (strings, bytes, submessages, packed repeats).
+
+*That is the whole of schema evolution.* Because the wire type carries the length,
+a reader that has never heard of field 9 can still find its end exactly, so it
+knows *that* it cannot read the record rather than guessing wrong — and an
+unknown field aborts the open, which is the safe reading of not knowing. Nothing
+is decoded by position, and nesting costs nothing extra because submessages are
+`LEN` records recursively.
+
+What the format insists on, from its own best-practices page:
+
+- Never re-use a tag number, and reserve the numbers of deleted fields.
+- Never change a field's type, and never add a required field.
+- Add enum values rather than changing them; never change a field's default.
+- Repeated-to-scalar loses data; scalar-to-repeated does not.
+- Binary for interchange, text format for humans only.
+- Never rely on serialization stability across builds: the same message can
+  serialize to different bytes, so those bytes are not a key.
+
+Limits worth knowing: a serialized message must be under 2 GiB, and unmarshaling
+depth is capped — 100 in Java and C++, 10000 in Go, with a plan to reduce it.
+
+What protobuf gives us is the *record*, not the store. It has no notion of
+mutation, no checksum, no framing of records into a file, and no index — so the
+per-unit checksums, the torn-tail truncation and the edge-only compaction of
+`research/persistence.dj` are all outside it, and its own answer to mutation is
+"write a new message". Its one piece of advice that maps onto this project
+directly is to keep API messages and storage messages apart, which is the same
+split as abstract and raw turns (`research/turns.dj`).
+
+Where it is worth having, and where it is not:
+
+- *The seam, yes.* The socket between client and server carries turn
+  modifications (`research/linux-process.dj`), which is exactly a versioned,
+  language-neutral binary protocol, and `Any` carries an arbitrary message with a
+  type URL for the part whose shape is not known in advance. The sibling project
+  draws the line in the same place: `omp2` keeps protobuf in
+  `crates/proto/proto/omp/*` and in the RPC-side crates (`envd`, `driver`,
+  `gateway`, `inference`, `collab`), while `crates/dom`, its session tree,
+  serializes with JSON — protobuf between components, a readable format for the
+  model.
+- *The store, no.* Everything `research/persistence.dj` asks of the store is
+  outside protobuf — no checksum, no framing of records into a file, no index, and
+  no mutation.
+- *The payload, no.* A tool set that changes while the agent runs cannot be a
+  compiled message, so a record's body is a tag plus opaque bytes, and protobuf
+  degrades into the container around them, discarding the typing it was chosen
+  for. The type model in `research/persistence.dj` reaches the same conclusion
+  from the other end: the schema is the Zig type, and there is no `.proto` to
+  drift from the code.
+
+Practically, `protoc` is installed on this machine, and every Zig implementation
+is a dependency — nothing here declares one.
+
+*Redaction is not a serialization problem.* `research/agent-world.dj` requires
+that a redaction destroys: the old value has to be gone rather than superseded,
+and the destruction has to reach every fork that copied it. No encoding does that,
+and protobuf has two properties pushing the wrong way — unknown fields are
+preserved in binary serialization, so a value can survive a round trip through a
+layer whose schema never knew it, and serialization is eager while the history is
+append-only, so the bytes remain in every earlier record and every copy. "Gone"
+has to be engineered at the store level, by destroying a key the ciphertext
+depends on or by rewriting the units; a format can only fail to help.
