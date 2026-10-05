@@ -23,6 +23,10 @@ pub const show_cursor = "\x1b[?25h";
 pub const erase_screen = "\x1b[2J";
 pub const erase_scrollback = "\x1b[3J";
 pub const cursor_home = "\x1b[H";
+/// kitty's keyboard protocol: asked for so a modified key — Shift-Enter above
+/// all — arrives as its own sequence instead of as a plain Enter.
+pub const push_keyboard_protocol = "\x1b[>1u";
+pub const pop_keyboard_protocol = "\x1b[<u";
 
 // ── Writing ─────────────────────────────────────────────────────────────────
 
@@ -122,6 +126,7 @@ pub fn size() ?Size {
 
 pub const Key = union(enum) {
     byte: u8,
+    shift_enter,
     left,
     right,
     up,
@@ -135,31 +140,51 @@ pub const Key = union(enum) {
 };
 
 /// Reads one key. Escape sequences are read whole, with a short wait for the
-/// bytes that follow `ESC` so a lone Escape does not block the UI.
+/// bytes that follow `ESC` so a lone Escape does not block the UI. With the
+/// keyboard protocol asked for, a modified key arrives as `CSI code;modifier u`
+/// and is told apart from its unmodified form.
 pub fn readKey() !Key {
     var byte: [1]u8 = undefined;
     if (!try readByte(&byte)) return .eof;
     if (byte[0] != 0x1b) return .{ .byte = byte[0] };
 
-    var first: [1]u8 = undefined;
-    if (!try readWithin(20, &first)) return .escape;
-    if (first[0] != '[' and first[0] != 'O') return .escape;
-    var second: [1]u8 = undefined;
-    if (!try readWithin(20, &second)) return .unknown;
-    return switch (second[0]) {
-        'A' => .up,
-        'B' => .down,
-        'C' => .right,
-        'D' => .left,
-        'H' => .home,
-        'F' => .end,
-        '3' => blk: {
-            var tilde: [1]u8 = undefined;
-            if (try readWithin(20, &tilde) and tilde[0] == '~') break :blk .delete;
-            break :blk .unknown;
+    var introducer: [1]u8 = undefined;
+    if (!try readWithin(20, &introducer)) return .escape;
+    if (introducer[0] != '[' and introducer[0] != 'O') return .escape;
+
+    var buffer: [16]u8 = undefined;
+    var length: usize = 0;
+    while (length < buffer.len) {
+        if (!try readWithin(20, &introducer)) return .unknown;
+        buffer[length] = introducer[0];
+        length += 1;
+        if (introducer[0] >= 0x40 and introducer[0] <= 0x7e) break;
+    }
+    if (length == 0) return .unknown;
+    return parseSequence(buffer[0..length]);
+}
+
+fn parseSequence(sequence: []const u8) Key {
+    const final = sequence[sequence.len - 1];
+    const body = sequence[0 .. sequence.len - 1];
+    switch (final) {
+        'A' => return .up,
+        'B' => return .down,
+        'C' => return .right,
+        'D' => return .left,
+        'H' => return .home,
+        'F' => return .end,
+        '~' => return if (std.mem.eql(u8, body, "3")) .delete else .unknown,
+        'u' => {
+            var parts = std.mem.splitScalar(u8, body, ';');
+            const code = std.fmt.parseInt(u32, parts.next() orelse return .unknown, 10) catch return .unknown;
+            const modifier = std.fmt.parseInt(u32, parts.next() orelse "1", 10) catch 1;
+            if (code == 13) return if (modifier >= 2) .shift_enter else .{ .byte = '\r' };
+            if (code == 9) return .{ .byte = 9 };
+            return .unknown;
         },
-        else => .unknown,
-    };
+        else => return .unknown,
+    }
 }
 
 fn readWithin(timeout_ms: i32, byte: *[1]u8) !bool {

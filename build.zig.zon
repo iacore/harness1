@@ -27,6 +27,7 @@
         "core/turns.zig",
         "core/system_prompt.zig",
         "core/debug.zig",
+        "core/python",
         "core/remote",
     },
 }

@@ -1,29 +1,29 @@
-//! The TUI mode: a terminal editor with a multi-line prompt buffer and a
-//! separate command buffer. Tab switches from the prompt to the command line;
-//! on the command line Tab completes the word when there is one, and returns to
-//! the prompt when the line is empty.
+//! The TUI mode: a prompt buffer and, over it, an IPython command line.
 //!
-//!   Tab              prompt → command; on the command line, complete, or leave
-//!                    when it is empty
-//!   :                also opens the command line
-//!   Enter            a newline on the prompt; runs the command on the command line
-//!   q, quit, exit    leave run1                    (a command)
-//!   prompt, system   load the harness system prompt into the prompt buffer
-//!   clear            empty the prompt buffer
-//!   <ident>?         say what an identifier is — a command, or a feature of the
-//!                    vocabulary and whether it is implemented
+//! Normal mode, on the prompt:
+//!   Enter          send it — the script's `add_turn` — and clear the buffer
+//!   Shift-Enter    a newline, so a prompt can be several lines
+//!   Tab, `:`       the command line
+//!   Ctrl-C         leave run1
+//!
+//! Command mode, on the command line, behaves as IPython's does:
+//!   Enter          run the line in the shell and show what it prints
+//!   Tab            complete the word at the cursor
+//!   Up, Down       the shell's history
+//!   Ctrl-D         back to the prompt
+//!   Ctrl-C         leave run1
 //!
 //! Editing goes by grapheme, not by byte: Backspace and Delete remove a whole
 //! cluster, the arrows step one, Home and End go to the line's ends, and
 //! columns are counted in the cells kitty draws — so a combining mark stays
 //! with its base and a wide character takes two columns. Long lines wrap. Every
-//! terminal call is `kitty.zig`.
+//! terminal call is `kitty.zig`, and the shell is `ipython.zig`.
 
 const std = @import("std");
 const Io = std.Io;
 const run1 = @import("run1");
 const kitty = @import("kitty.zig");
-const python = @import("python.zig");
+const ipython = @import("ipython.zig");
 
 pub fn run(init: std.process.Init) !void {
     var editor: Editor = .{ .gpa = init.gpa };
@@ -35,7 +35,8 @@ pub fn run(init: std.process.Init) !void {
     const raw = kitty.startRaw() catch return error.NotATerminal;
     defer raw.deinit();
     kitty.write(kitty.enter_alternate_screen) catch {};
-    defer kitty.write(kitty.leave_alternate_screen ++ kitty.show_cursor) catch {};
+    kitty.write(kitty.push_keyboard_protocol) catch {};
+    defer kitty.write(kitty.pop_keyboard_protocol ++ kitty.leave_alternate_screen ++ kitty.show_cursor) catch {};
 
     editor.render();
     while (true) {
@@ -45,26 +46,17 @@ pub fn run(init: std.process.Init) !void {
     }
 }
 
-/// A command on the command line, and the line `name?` answers with.
-const Command = struct { name: []const u8, help: []const u8 };
-
-const commands = [_]Command{
-    .{ .name = "q", .help = "command: leave run1" },
-    .{ .name = "quit", .help = "command: leave run1" },
-    .{ .name = "exit", .help = "command: leave run1" },
-    .{ .name = "prompt", .help = "command: load the harness system prompt" },
-    .{ .name = "system", .help = "command: load the harness system prompt" },
-    .{ .name = "clear", .help = "command: empty the prompt buffer" },
-};
-
 const Editor = struct {
     gpa: std.mem.Allocator,
     /// The prompt being edited.
     buffer: std.ArrayList(u8) = .empty,
     cursor: usize = 0,
-    /// The command line, kept apart from the prompt and left in place while the
-    /// prompt is shown.
+    /// The command line, kept apart from the prompt.
     command: std.ArrayList(u8) = .empty,
+    command_cursor: usize = 0,
+    /// The line as it was before the history was walked, so Down can put it back.
+    draft: std.ArrayList(u8) = .empty,
+    history_offset: usize = 0,
     mode: Mode = .prompt,
     status: []const u8 = "",
     status_buffer: [192]u8 = undefined,
@@ -78,6 +70,7 @@ const Editor = struct {
     fn deinit(self: *Editor) void {
         self.buffer.deinit(self.gpa);
         self.command.deinit(self.gpa);
+        self.draft.deinit(self.gpa);
     }
 
     fn setStatus(self: *Editor, comptime format: []const u8, args: anytype) void {
@@ -91,16 +84,18 @@ const Editor = struct {
         };
     }
 
+    // ── Normal mode ─────────────────────────────────────────────────────────
+
     fn promptKey(self: *Editor, key: kitty.Key) bool {
         switch (key) {
             .byte => |byte| switch (byte) {
                 3 => return true, // Ctrl-C
-                0x13 => self.submit(), // Ctrl-S: send the prompt as a turn
                 9, ':' => self.mode = .command, // Tab, and `:` for a keyboard without one
+                '\r', '\n' => self.submit(),
                 0x7f, 0x08 => self.backspace(),
-                '\r', '\n' => self.insertByte('\n'),
                 else => if (byte >= 0x20) self.insertByte(byte),
             },
+            .shift_enter => self.insertByte('\n'),
             .left => self.cursor = self.steppedBack(self.cursor),
             .right => self.cursor = self.steppedForward(self.cursor),
             .up => self.moveLine(-1),
@@ -113,65 +108,14 @@ const Editor = struct {
         return false;
     }
 
-    fn commandKey(self: *Editor, key: kitty.Key) bool {
-        switch (key) {
-            .byte => |byte| switch (byte) {
-                3 => return true, // Ctrl-C
-                9 => if (self.command.items.len == 0) {
-                    self.mode = .prompt;
-                } else {
-                    self.complete();
-                },
-                0x7f, 0x08 => if (self.command.items.len > 0) {
-                    _ = self.command.pop();
-                },
-                '\r', '\n' => return self.run(),
-                else => if (byte >= 0x20) self.command.append(self.gpa, byte) catch {},
-            },
-            .escape => self.mode = .prompt,
-            else => {},
-        }
-        return false;
-    }
-
-    fn run(self: *Editor) bool {
-        const command = std.mem.trim(u8, self.command.items, " \t");
-        // Cleared after the command is used: `command` borrows that buffer.
-        defer self.command.clearRetainingCapacity();
-        self.mode = .prompt;
-
-        // `ident?` — or `ident??` — asks what something is rather than doing it.
-        if (std.mem.endsWith(u8, command, "?")) {
-            self.describe(std.mem.trimEnd(u8, command, "?"));
-            return false;
-        }
-        if (eq(command, "q") or eq(command, "quit") or eq(command, "exit")) return true;
-        if (eq(command, "prompt") or eq(command, "system")) {
-            self.loadSystemPrompt() catch {
-                self.status = "could not load the system prompt";
-            };
-        } else if (eq(command, "clear")) {
-            self.buffer.clearRetainingCapacity();
-            self.cursor = 0;
-            self.top = 0;
-            self.status = "cleared";
-        } else {
-            // Everything else is the scripting language: the line is evaluated
-            // in the embedded interpreter and what it prints is shown.
-            self.evaluate(command);
-        }
-        return false;
-    }
-
-    /// The prompt going out: the scripting language's `add_turn`, so sending a
-    /// turn is a step like any other.
+    /// Sends the prompt: the scripting layer's `add_turn`, so sending a turn is
+    /// a step like any other.
     fn submit(self: *Editor) void {
-        const text = self.buffer.items;
-        if (text.len == 0) {
+        if (self.buffer.items.len == 0) {
             self.status = "nothing to send";
             return;
         }
-        const output = python.addTurn(self.gpa, text) catch {
+        const output = ipython.addTurn(self.gpa, self.buffer.items) catch {
             self.status = "the scripting layer failed";
             return;
         };
@@ -182,79 +126,140 @@ const Editor = struct {
         self.show(output);
     }
 
-    fn evaluate(self: *Editor, line: []const u8) void {
-        const output = python.eval(self.gpa, line) catch {
+    // ── Command mode, as IPython's ──────────────────────────────────────────
+
+    fn commandKey(self: *Editor, key: kitty.Key) bool {
+        switch (key) {
+            .byte => |byte| switch (byte) {
+                3 => return true, // Ctrl-C
+                4 => self.mode = .prompt, // Ctrl-D, back to the prompt
+                9 => self.complete(),
+                '\r', '\n' => return self.runCommand(),
+                0x7f, 0x08 => self.commandBackspace(),
+                else => if (byte >= 0x20) self.commandInsert(byte),
+            },
+            .left => if (self.command_cursor > 0) {
+                self.command_cursor -= 1;
+            },
+            .right => if (self.command_cursor < self.command.items.len) {
+                self.command_cursor += 1;
+            },
+            .up => self.history(1),
+            .down => self.history(-1),
+            .home => self.command_cursor = 0,
+            .end => self.command_cursor = self.command.items.len,
+            .delete => if (self.command_cursor < self.command.items.len) {
+                _ = self.command.orderedRemove(self.command_cursor);
+            },
+            .escape => self.mode = .prompt,
+            .shift_enter, .eof, .unknown => {},
+        }
+        return false;
+    }
+
+    fn runCommand(self: *Editor) bool {
+        const line = std.mem.trim(u8, self.command.items, " \t");
+        defer {
+            self.command.clearRetainingCapacity();
+            self.command_cursor = 0;
+            self.history_offset = 0;
+        }
+        self.mode = .prompt;
+        if (line.len == 0) {
+            self.status = "";
+            return false;
+        }
+        const output = ipython.run(self.gpa, line) catch {
             self.status = "the scripting layer failed";
-            return;
+            return false;
         };
         defer self.gpa.free(output);
         self.show(output);
+        return false;
     }
 
-    /// Puts what the scripting layer printed at the cursor, and its first line
-    /// on the status row.
+    /// Completes the word before the cursor from the shell, and lists what it
+    /// found on the status row.
+    fn complete(self: *Editor) void {
+        const line = self.command.items;
+        const output = ipython.complete(self.gpa, line, self.command_cursor) catch return;
+        defer self.gpa.free(output);
+        if (output.len == 0) return;
+
+        var matches = std.mem.splitScalar(u8, output, '\n');
+        const first = matches.next() orelse return;
+
+        // Replace the word before the cursor, keeping whatever follows it.
+        var start = self.command_cursor;
+        while (start > 0 and isWordByte(line[start - 1])) start -= 1;
+        const tail = self.gpa.dupe(u8, line[self.command_cursor..]) catch return;
+        defer self.gpa.free(tail);
+        self.command.items.len = start;
+        self.command.appendSlice(self.gpa, first) catch return;
+        self.command.appendSlice(self.gpa, tail) catch return;
+        self.command_cursor = start + first.len;
+
+        // The matches on the status row, one line turned into spaces.
+        var length: usize = 0;
+        for (output) |byte| {
+            if (length >= self.status_buffer.len) break;
+            self.status_buffer[length] = if (byte == '\n') ' ' else byte;
+            length += 1;
+        }
+        self.status = self.status_buffer[0..length];
+    }
+
+    /// Walks the shell's history: up goes back, down comes forward, and coming
+    /// back to the start restores the line that was being typed.
+    fn history(self: *Editor, delta: isize) void {
+        const next = @as(isize, @intCast(self.history_offset)) + delta;
+        if (next < 0) return;
+        if (next == 0) {
+            if (self.history_offset != 0) self.setCommand(self.draft.items);
+            self.history_offset = 0;
+            return;
+        }
+        if (self.history_offset == 0) {
+            self.draft.clearRetainingCapacity();
+            self.draft.appendSlice(self.gpa, self.command.items) catch {};
+        }
+        const entry = ipython.history(self.gpa, @intCast(next)) catch return;
+        defer self.gpa.free(entry);
+        if (entry.len == 0) return;
+        self.setCommand(entry);
+        self.history_offset = @intCast(next);
+    }
+
+    fn setCommand(self: *Editor, text: []const u8) void {
+        self.command.clearRetainingCapacity();
+        self.command.appendSlice(self.gpa, text) catch {};
+        self.command_cursor = self.command.items.len;
+    }
+
+    fn commandInsert(self: *Editor, byte: u8) void {
+        self.command.insert(self.gpa, self.command_cursor, byte) catch return;
+        self.command_cursor += 1;
+    }
+
+    fn commandBackspace(self: *Editor) void {
+        if (self.command_cursor == 0) return;
+        _ = self.command.orderedRemove(self.command_cursor - 1);
+        self.command_cursor -= 1;
+    }
+
+    /// Puts what the shell printed after the prompt, and its first line on the
+    /// status row.
     fn show(self: *Editor, output: []const u8) void {
         if (output.len == 0) {
             self.status = "";
             return;
         }
-        self.buffer.insertSlice(self.gpa, self.cursor, output) catch return;
-        self.cursor += output.len;
+        self.buffer.appendSlice(self.gpa, output) catch return;
+        self.cursor = self.buffer.items.len;
         self.setStatus("{s}", .{std.mem.sliceTo(output, '\n')});
     }
 
-    /// Says what `identifier` is: a command, or a feature of the vocabulary and
-    /// whether the harness implements it.
-    fn describe(self: *Editor, identifier: []const u8) void {
-        if (identifier.len == 0) {
-            self.status = "";
-            return;
-        }
-        for (commands) |command| {
-            if (eq(command.name, identifier)) {
-                self.setStatus("{s} — {s}", .{ identifier, command.help });
-                return;
-            }
-        }
-        const omp = run1.omp_features;
-        inline for (std.enums.values(omp.Kind)) |kind| {
-            for (omp.table(kind)) |value| {
-                if (eq(value, identifier)) {
-                    self.setStatus("{s} — {s}, {s}", .{
-                        identifier,
-                        @tagName(kind),
-                        if (omp.isImplemented(kind, value)) "implemented" else "not implemented",
-                    });
-                    return;
-                }
-            }
-        }
-        self.setStatus("{s} — nothing here goes by that name", .{identifier});
-    }
-
-    /// Replaces the word before the cursor with the next candidate it prefixes.
-    fn complete(self: *Editor) void {
-        const text = self.command.items;
-        var start = text.len;
-        while (start > 0 and text[start - 1] != ' ') start -= 1;
-        const word = text[start..];
-        const next = nextCompletion(word) orelse return;
-        self.command.items.len = start;
-        self.command.appendSlice(self.gpa, next) catch {};
-    }
-
-    fn loadSystemPrompt(self: *Editor) !void {
-        var out: Io.Writer.Allocating = .init(self.gpa);
-        defer out.deinit();
-        try run1.system_prompt.systemPrompt(&out.writer);
-        self.buffer.clearRetainingCapacity();
-        try self.buffer.appendSlice(self.gpa, out.written());
-        self.cursor = 0;
-        self.top = 0;
-        self.setStatus("loaded the harness system prompt", .{});
-    }
-
-    // ── Editing, by grapheme ────────────────────────────────────────────────
+    // ── Editing the prompt, by grapheme ─────────────────────────────────────
 
     fn insertByte(self: *Editor, byte: u8) void {
         self.buffer.insert(self.gpa, self.cursor, byte) catch return;
@@ -436,29 +441,13 @@ const Editor = struct {
         kitty.print("\x1b[{d};1H\x1b[K", .{self.rows});
         if (self.mode == .command) {
             kitty.print(":{s}", .{self.command.items});
-            kitty.print("\x1b[{d};{d}H", .{ self.rows, self.command.items.len + 2 });
+            kitty.print("\x1b[{d};{d}H", .{ self.rows, self.command_cursor + 2 });
         } else {
             kitty.print("\x1b[{d};{d}H", .{ 2 + (cursor.row - self.top), cursor.col + 1 });
         }
     }
 };
 
-/// The next name `word` prefixes: a command first, then a feature of the
-/// vocabulary. The first match, not a cycle — Tab completes rather than walks.
-fn nextCompletion(word: []const u8) ?[]const u8 {
-    if (word.len == 0) return null;
-    for (commands) |command| {
-        if (command.name.len > word.len and std.mem.startsWith(u8, command.name, word)) return command.name;
-    }
-    const omp = run1.omp_features;
-    inline for (std.enums.values(omp.Kind)) |kind| {
-        for (omp.table(kind)) |value| {
-            if (value.len > word.len and std.mem.startsWith(u8, value, word)) return value;
-        }
-    }
-    return null;
-}
-
-fn eq(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
+fn isWordByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or byte == '.' or byte == '_';
 }

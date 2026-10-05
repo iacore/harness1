@@ -32,7 +32,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "run1", .module = mod },
             },
         });
-        ui.addCSourceFile(.{ .file = b.path("ui/python_shim.c"), .flags = &.{"-std=c99"} });
+        ui.addCSourceFile(.{ .file = b.path("ui/ipython_shim.c"), .flags = &.{"-std=c99"} });
         for (pythonFlags(b, &.{ "--embed", "--includes" }, "-I")) |path| ui.addIncludePath(.{ .cwd_relative = path });
         for (pythonFlags(b, &.{ "--embed", "--ldflags" }, "-l")) |name| ui.linkSystemLibrary(name, .{});
         const exe = b.addExecutable(.{ .name = "run1", .root_module = ui });
@@ -91,7 +91,7 @@ pub fn harnessModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build
 /// under the install root, so the two have to agree.
 pub fn installOmpKeys(b: *std.Build) *std.Build.Step.InstallFile {
     return b.addInstallFileWithDir(
-        b.path("core/remote/omp-keys.py"),
+        b.path("core/python/omp-keys.py"),
         .lib,
         "run1/omp-keys.py",
     );

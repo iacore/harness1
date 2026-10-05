@@ -39,7 +39,7 @@ claim says whether it was observed or inferred.
 | `research/lithos/lithos_media_probe.zig` | `zig build --build-file ./build.research.zig lithos_media` — probes how image, audio and video input are carried, raw HTTP plus one typed request; findings in `src/remote/lithos_models.md`. |
 | `research/lithos/media/` | The probe's own `probe.png` (`ZEBRA 42`), `probe.mp4` and `probe.wav`, sent as base64 data URLs. |
 | `research/lithos/latency.dj` | Time-to-first-token against the official DeepSeek API on identical prompts: cache behaviour, transport, and the scale curve. |
-| `src/remote/omp-keys.py` | Reads the key from omp's `agent.db`; shared with every provider, not Lithos-specific. |
+| `core/python/omp-keys.py` | Reads the key from omp's `agent.db`; shared with every provider, not Lithos-specific. |
 
 Client-side shape worth remembering: `chat.Function.strict` is a plain `?bool`
 beside `parameters`, a pre-encoded JSON Schema string. There is no schema builder
