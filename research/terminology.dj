@@ -22,6 +22,12 @@ descriptions: code, comments and documents use them with exactly these meanings.
   The whole of what has been experienced — global, and unique as one. See
   `research/agent-world.dj`.
 
+## A word we do not define
+
+`agent` is fine to say, and it means little here, so it defines nothing. It is not
+the runner (`running prompt`), not the turns (`prompt`), and not what has been
+experienced (`world model`) — reach for the word that names the thing.
+
 ## Constraints
 
 - All harness1 processes on a machine share a single Linux process group, so the
