@@ -21,6 +21,12 @@
 //! Editing goes by grapheme, not by byte, and columns are counted in the cells
 //! kitty draws. Long lines wrap. Every terminal call is `kitty.zig`, and the
 //! shell is `ipython.zig`.
+//!
+//! Sessions are the world's: `session.zig` owns the file, `editor.zig` writes a
+//! turn tree into it and reads one back, `-c` becomes the last session and
+//! `--resume` opens the picker over every one of them, and what a run leaves
+//! behind is filed on the way out. A resumed run that said nothing new is not
+//! filed again.
 
 const std = @import("std");
 const Io = std.Io;
@@ -32,15 +38,17 @@ const row = @import("row.zig");
 const theme = @import("theme.zig");
 const screen = @import("screen.zig");
 const model = @import("model.zig");
+const session = @import("session.zig");
 const debug = run1.debug;
 const lithos = run1.lithos;
 
 /// How many times the model may call tools before the round loop gives up.
 const max_rounds = 8;
 
-pub fn run(init: std.process.Init) !void {
+pub fn run(init: std.process.Init, options: Options) !void {
     var tui = try Tui.init(init.gpa, init.io, init.environ_map);
     defer tui.deinit();
+    tui.begin(options);
     if (init.environ_map.get("COLUMNS")) |value| tui.cols = std.fmt.parseInt(usize, value, 10) catch 80;
     if (init.environ_map.get("LINES")) |value| tui.rows = std.fmt.parseInt(usize, value, 10) catch 24;
 
@@ -57,6 +65,9 @@ pub fn run(init: std.process.Init) !void {
         if (try tui.pressKey(key)) break;
         tui.render();
     }
+    // What the run leaves behind is written on the way out, so the next one can
+    // resume it.
+    tui.save();
 }
 
 const Mode = enum {
@@ -68,6 +79,17 @@ const Mode = enum {
     shell,
     /// The `:keys` reference, drawn in place of the tree.
     sheet,
+    /// The sessions on disk, drawn in place of the tree, waiting to be picked.
+    picking,
+};
+
+/// What the command line asked for, from `ui/main.zig`: no flags is a fresh
+/// session, and the store is still written on the way out.
+pub const Options = struct {
+    /// `-c`: become the last session the store holds.
+    resume_last: bool = false,
+    /// `--resume`: open the picker over what it holds.
+    resume_pick: bool = false,
 };
 
 /// One command the harness's own command line takes: its name, what it does,
@@ -133,6 +155,11 @@ const bindings = struct {
         .{ .keys = "<up> <down>", .what = "scroll" },
         .{ .keys = "<esc> q", .what = "back to the tree" },
     };
+    const picker = [_]Binding{
+        .{ .keys = "<up> <down>", .what = "the session to resume" },
+        .{ .keys = "<enter>", .what = "resume it" },
+        .{ .keys = "<esc> q", .what = "start a fresh one" },
+    };
 };
 
 /// One section of the sheet: a mode, and its keys.
@@ -146,6 +173,7 @@ const sections = [_]Section{
     .{ .name = "command mode", .rows = &bindings.command },
     .{ .name = "IPython mode", .rows = &bindings.shell },
     .{ .name = "this sheet", .rows = &bindings.sheet },
+    .{ .name = "the picker", .rows = &bindings.picker },
 };
 
 const Tui = struct {
@@ -164,6 +192,15 @@ const Tui = struct {
     line_cursor: usize = 0,
     /// The `:keys` sheet, drawn in place of the tree while it is open. Owned.
     sheet: ?[]const u8 = null,
+    /// The world the sessions live in, or null when it could not be opened: a
+    /// session that cannot be kept is not a reason to refuse to run.
+    world: ?run1.world.World = null,
+    /// The session the picker is on.
+    pick: usize = 0,
+    /// The turns a resume brought in. A run that added none of its own is that
+    /// session again, and filing it a second time would fill the picker with
+    /// copies of it.
+    resumed_with: usize = 0,
     /// The command line as it was before the history was walked, so Down can
     /// put it back.
     draft: std.ArrayList(u8) = .empty,
@@ -179,13 +216,40 @@ const Tui = struct {
     frame: screen.Screen,
 
     fn init(gpa: std.mem.Allocator, io: Io, environ_map: *const std.process.Environ.Map) !Tui {
-        return .{
+        var tui: Tui = .{
             .gpa = gpa,
             .io = io,
             .environ_map = environ_map,
             .doc = try editor.Editor.init(gpa),
             .frame = screen.Screen.init(gpa),
         };
+        // A store that cannot be opened is not a reason to refuse to run: the
+        // session is simply not kept.
+        tui.world = session.open(gpa, io, environ_map) catch null;
+        return tui;
+    }
+
+    /// Takes the flags. Called once the caller owns the returned struct: a
+    /// status set inside `init` would point into the copy it was built in.
+    fn begin(self: *Tui, options: Options) void {
+        const total = self.sessionCount();
+        if (options.resume_pick) {
+            if (total == 0) {
+                self.setStatus("no sessions to resume yet", .{});
+            } else {
+                self.mode = .picking;
+                self.pick = total - 1;
+            }
+        } else if (options.resume_last) {
+            if (total == 0) {
+                self.setStatus("no sessions to resume yet", .{});
+            } else if (self.world) |*w| {
+                if (self.doc.restore(w, total - 1)) |_| {
+                    self.resumed_with = self.doc.nodes.items.len;
+                    self.setStatus("resumed {s}", .{session.name(w, total - 1)});
+                } else |_| self.setStatus("the last session could not be read", .{});
+            }
+        }
     }
 
     fn deinit(self: *Tui) void {
@@ -194,7 +258,113 @@ const Tui = struct {
         self.draft.deinit(self.gpa);
         self.line.deinit(self.gpa);
         if (self.sheet) |text| self.gpa.free(text);
+        if (self.world) |*w| w.deinit();
         self.frame.deinit();
+    }
+
+    /// How many sessions the store holds; none when it did not open.
+    fn sessionCount(self: *Tui) usize {
+        if (self.world) |*w| return session.count(w);
+        return 0;
+    }
+
+    /// Writes what this run leaves behind, unless it said nothing: an empty run
+    /// is not worth a row in the picker.
+    fn save(self: *Tui) void {
+        if (self.doc.nodes.items.len == self.resumed_with) return;
+        const filing = self.label() orelse return;
+        if (self.world) |*w| self.doc.save(w, filing) catch {};
+    }
+
+    /// What the run is filed under: the first thing said in it, one line, cut
+    /// to what a picker row holds.
+    fn label(self: *Tui) ?[]const u8 {
+        var path: std.ArrayList(editor.Turn) = .empty;
+        defer path.deinit(self.gpa);
+        self.doc.path(&path) catch return null;
+        for (path.items) |turn| {
+            if (self.doc.turnKind(turn) != .user) continue;
+            const said = self.doc.turnText(turn);
+            if (said.len == 0) continue;
+            const line = std.mem.sliceTo(said, '\n');
+            return line[0..@min(line.len, 64)];
+        }
+        return null;
+    }
+
+    // ── The picker ──────────────────────────────────────────────────────────
+
+    fn pickerKey(self: *Tui, key: kitty.Key) bool {
+        const total = self.sessionCount();
+        switch (key) {
+            .byte => |byte| switch (byte) {
+                3 => return true, // Ctrl-C
+                'j' => if (self.pick + 1 < total) {
+                    self.pick += 1;
+                },
+                'k' => if (self.pick > 0) {
+                    self.pick -= 1;
+                },
+                '\r', '\n' => self.resumePicked(),
+                'q', 0x1b => self.startFresh(),
+                else => {},
+            },
+            .down => if (self.pick + 1 < total) {
+                self.pick += 1;
+            },
+            .up => if (self.pick > 0) {
+                self.pick -= 1;
+            },
+            .home => self.pick = 0,
+            .end => self.pick = if (total == 0) 0 else total - 1,
+            .escape => self.startFresh(),
+            else => {},
+        }
+        return false;
+    }
+
+    /// Enter: the marked session becomes this editor's tree.
+    fn resumePicked(self: *Tui) void {
+        if (self.world) |*w| {
+            const picked = self.pick;
+            if (self.doc.restore(w, picked)) |_| {
+                self.resumed_with = self.doc.nodes.items.len;
+                self.mode = .normal;
+                self.setStatus("resumed {s}", .{session.name(w, picked)});
+                return;
+            } else |_| {}
+        }
+        self.mode = .normal;
+        self.setStatus("that session could not be read", .{});
+    }
+
+    /// The way out that does not resume: the picker closes and the tree is the
+    /// fresh one this run started with.
+    fn startFresh(self: *Tui) void {
+        self.mode = .normal;
+        self.setStatus("a fresh session", .{});
+    }
+
+    /// The sessions as rows, newest last, with the one Enter would take marked.
+    fn pickerRows(self: *Tui, out: *std.ArrayList([]u8), width: usize) !void {
+        const total = self.sessionCount();
+        if (total == 0) {
+            try out.append(self.gpa, try self.gpa.dupe(u8, "no sessions yet"));
+            return;
+        }
+        for (0..total) |index| {
+            const filed = if (self.world) |*w| session.name(w, index) else "";
+            const name = if (filed.len == 0) "(unnamed)" else filed;
+            const mark = if (index == self.pick) "› " else "  ";
+            const painted = if (index == self.pick)
+                try theme.paint(self.gpa, theme.accent, name)
+            else
+                try self.gpa.dupe(u8, name);
+            defer self.gpa.free(painted);
+            const kept = try row.truncate(self.gpa, painted, if (width > 2) width - 2 else 1);
+            defer self.gpa.free(kept);
+            try out.append(self.gpa, try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ mark, kept }));
+        }
     }
 
     fn setStatus(self: *Tui, comptime format: []const u8, args: anytype) void {
@@ -211,6 +381,7 @@ const Tui = struct {
             .command => self.commandKey(key),
             .shell => self.shellKey(key),
             .sheet => self.sheetKey(key),
+            .picking => self.pickerKey(key),
         };
     }
 
@@ -863,7 +1034,12 @@ const Tui = struct {
         defer freeRows(self.gpa, &transcript);
         var cursor_row: usize = 0;
         var cursor_col: usize = 0;
-        if (self.sheet) |text| {
+        if (self.mode == .picking) {
+            self.pickerRows(&transcript, width) catch {};
+            // The highlighted row is where the picker's cursor is, so the same
+            // rule keeps it in view.
+            cursor_row = self.pick;
+        } else if (self.sheet) |text| {
             self.sheetRows(&transcript, text, width) catch {};
         } else {
             self.turnRows(&transcript, width, &cursor_row, &cursor_col) catch {};
