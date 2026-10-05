@@ -126,6 +126,8 @@ pub fn size() ?Size {
 
 pub const Key = union(enum) {
     byte: u8,
+    /// Alt and a letter: the modified keys the editor's own commands use.
+    alt: u8,
     shift_enter,
     left,
     right,
@@ -179,18 +181,25 @@ fn parseSequence(sequence: []const u8) Key {
             var parts = std.mem.splitScalar(u8, body, ';');
             const code = std.fmt.parseInt(u32, parts.next() orelse return .unknown, 10) catch return .unknown;
             const modifier = std.fmt.parseInt(u32, parts.next() orelse "1", 10) catch 1;
+            const shift = modifier >= 2 and (modifier - 1) & 1 != 0;
+            const alt = modifier >= 2 and (modifier - 1) & 2 != 0;
+            const ctrl = modifier >= 2 and (modifier - 1) & 4 != 0;
             // Ctrl and a key arrive as their control character, which is what
             // the rest of the editor already handles — Ctrl-C and Ctrl-D above
             // all, so a keyboard using this protocol can still leave.
-            if (modifier >= 2 and (modifier - 1) & 4 != 0) {
+            if (ctrl) {
                 if (code >= 'a' and code <= 'z') return .{ .byte = @intCast(code - 'a' + 1) };
                 if (code >= 'A' and code <= 'Z') return .{ .byte = @intCast(code - 'A' + 1) };
                 if (code == '[') return .escape;
                 if (code == ' ') return .{ .byte = 0 };
                 return .unknown;
             }
+            if (alt and !shift) {
+                if (code >= 'a' and code <= 'z') return .{ .alt = @intCast(code) };
+                if (code >= 'A' and code <= 'Z') return .{ .alt = @intCast(code - 'A' + 'a') };
+            }
             if (code == 27) return .escape;
-            if (code == 13) return if (modifier >= 2) .shift_enter else .{ .byte = '\r' };
+            if (code == 13) return if (shift) .shift_enter else .{ .byte = '\r' };
             if (code == 9) return .{ .byte = 9 };
             return .unknown;
         },

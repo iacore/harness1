@@ -1,36 +1,51 @@
-//! The TUI mode: a prompt buffer and, over it, an IPython command line.
+//! The TUI mode: a turn tree, drawn, with an IPython command line over it. The
+//! turns are `editor.zig`'s tree — revisions, streams, merges, retroactive
+//! edits — and this file is the modes, the keys, the command line and the
+//! drawing.
 //!
-//! Normal mode, on the prompt:
-//!   Enter          send it — `!command` runs it in fish, anything else the
-//!                  script's `add_turn` — and clear the buffer
-//!   Shift-Enter    a newline, so a prompt can be several lines
-//!   Tab, `:`       the command line
-//!   Ctrl-C         leave run1
+//! Keys are Kakoune's, and so is the model behind them: there is always a
+//! selection, a motion moves the cursor and leaves the anchor — so the text
+//! moved over is what is selected — and what `d`, `c` and typing act on is that
+//! selection. `<esc>` leaves insert mode.
 //!
-//! Command mode, on the command line, behaves as IPython's does:
-//!   Enter          run the line in the shell and show what it prints
-//!   Tab            complete the word at the cursor
-//!   Up, Down       the shell's history
-//!   Ctrl-D         back to the prompt
-//!   Ctrl-C         leave run1
+//! Normal mode — the keys are commands:
+//!   h j k l       left, down, up, right (the arrows do the same)
+//!   w b e         word forward, back, and to the word's end
+//!   i a I A       insert before, after, at the line's start, at its end
+//!   o O           open a line below, above
+//!   d c           delete the selection, or delete it and insert
+//!   x % ;         the whole lines, the whole turn, collapse the selection
+//!   C             append an assistant turn by hand — what `/continue` was
+//!   <a-b>         ask the prompt as a side question, on a revision of its own
+//!   <a-t>         read the next revision: a view, nothing is written to it
+//!   <a-m>         the tags the selected turn was generated with
+//!   : Tab         the command line          Ctrl-C  leave run1
 //!
-//! Editing goes by grapheme, not by byte: Backspace and Delete remove a whole
-//! cluster, the arrows step one, Home and End go to the line's ends, and
-//! columns are counted in the cells kitty draws — so a combining mark stays
-//! with its base and a wide character takes two columns. Long lines wrap. Every
-//! terminal call is `kitty.zig`, and the shell is `ipython.zig`.
+//! Insert mode — the keys are text:
+//!   Enter         send it: `!command` runs in fish, anything else the script's
+//!                 `add_turn`, and a fresh prompt follows
+//!   Shift-Enter   a newline, so a prompt can be several lines
+//!   Esc           back to normal mode       Tab     the command line
+//!
+//! Command mode is IPython's: Enter runs the line in the shell, Tab completes,
+//! Up and Down walk the shell's history, Ctrl-D comes back.
+//!
+//! Editing goes by grapheme, not by byte, and columns are counted in the cells
+//! kitty draws. Long lines wrap. Every terminal call is `kitty.zig`, and the
+//! shell is `ipython.zig`.
 
 const std = @import("std");
 const Io = std.Io;
 const run1 = @import("run1");
 const kitty = @import("kitty.zig");
 const ipython = @import("ipython.zig");
+const editor = @import("editor.zig");
 
 pub fn run(init: std.process.Init) !void {
-    var editor: Editor = .{ .gpa = init.gpa };
-    defer editor.deinit();
-    if (init.environ_map.get("COLUMNS")) |value| editor.cols = std.fmt.parseInt(usize, value, 10) catch 80;
-    if (init.environ_map.get("LINES")) |value| editor.rows = std.fmt.parseInt(usize, value, 10) catch 24;
+    var tui = try Tui.init(init.gpa);
+    defer tui.deinit();
+    if (init.environ_map.get("COLUMNS")) |value| tui.cols = std.fmt.parseInt(usize, value, 10) catch 80;
+    if (init.environ_map.get("LINES")) |value| tui.rows = std.fmt.parseInt(usize, value, 10) catch 24;
 
     // No terminal to draw on: the caller falls back to the CLI.
     const raw = kitty.startRaw() catch return error.NotATerminal;
@@ -39,106 +54,331 @@ pub fn run(init: std.process.Init) !void {
     kitty.write(kitty.push_keyboard_protocol) catch {};
     defer kitty.write(kitty.pop_keyboard_protocol ++ kitty.leave_alternate_screen ++ kitty.show_cursor) catch {};
 
-    editor.render();
+    tui.render();
     while (true) {
         const key = kitty.readKey() catch break;
-        if (try editor.handle(key)) break;
-        editor.render();
+        if (try tui.handle(key)) break;
+        tui.render();
     }
 }
 
-const Editor = struct {
+const Mode = enum { normal, insert, command };
+
+const Tui = struct {
     gpa: std.mem.Allocator,
-    /// The prompt being edited.
-    buffer: std.ArrayList(u8) = .empty,
-    cursor: usize = 0,
+    doc: editor.Editor,
     /// The command line, kept apart from the prompt.
     command: std.ArrayList(u8) = .empty,
     command_cursor: usize = 0,
-    /// The line as it was before the history was walked, so Down can put it back.
+    /// The command line as it was before the history was walked, so Down can
+    /// put it back.
     draft: std.ArrayList(u8) = .empty,
     history_offset: usize = 0,
-    mode: Mode = .prompt,
+    mode: Mode = .normal,
     status: []const u8 = "",
-    status_buffer: [192]u8 = undefined,
+    status_buffer: [256]u8 = undefined,
     cols: usize = 80,
     rows: usize = 24,
-    /// The display row drawn on the editor's first row.
+    /// The display row drawn on the first row after the status.
     top: usize = 0,
 
-    const Mode = enum { prompt, command };
+    fn init(gpa: std.mem.Allocator) !Tui {
+        return .{ .gpa = gpa, .doc = try editor.Editor.init(gpa) };
+    }
 
-    fn deinit(self: *Editor) void {
-        self.buffer.deinit(self.gpa);
+    fn deinit(self: *Tui) void {
+        self.doc.deinit();
         self.command.deinit(self.gpa);
         self.draft.deinit(self.gpa);
     }
 
-    fn setStatus(self: *Editor, comptime format: []const u8, args: anytype) void {
+    fn setStatus(self: *Tui, comptime format: []const u8, args: anytype) void {
         self.status = std.fmt.bufPrint(&self.status_buffer, format, args) catch self.status_buffer[0..0];
     }
 
-    fn handle(self: *Editor, key: kitty.Key) !bool {
+    fn handle(self: *Tui, key: kitty.Key) !bool {
         return switch (self.mode) {
-            .prompt => self.promptKey(key),
+            .normal => self.normalKey(key),
+            .insert => self.insertKey(key),
             .command => self.commandKey(key),
         };
     }
 
-    // ── Normal mode ─────────────────────────────────────────────────────────
+    // ── Normal mode, as Kakoune's ───────────────────────────────────────────
 
-    fn promptKey(self: *Editor, key: kitty.Key) bool {
+    fn normalKey(self: *Tui, key: kitty.Key) bool {
+        const text = self.doc.text();
         switch (key) {
             .byte => |byte| switch (byte) {
                 3 => return true, // Ctrl-C
                 9, ':' => self.mode = .command, // Tab, and `:` for a keyboard without one
-                '\r', '\n' => self.submit(),
-                0x7f, 0x08 => self.backspace(),
-                else => if (byte >= 0x20) self.insertByte(byte),
+                'h' => self.doc.stepTo(kitty.prevGrapheme(text, 0, self.doc.cursor)),
+                'l' => self.doc.stepTo(kitty.nextGrapheme(text, self.doc.cursor)),
+                'j' => self.moveLine(1),
+                'k' => self.moveLine(-1),
+                'w' => self.doc.stepTo(wordForward(text, self.doc.cursor)),
+                'b' => self.doc.stepTo(wordBack(text, self.doc.cursor)),
+                'e' => self.doc.stepTo(wordEnd(text, self.doc.cursor)),
+                'i' => self.insertBefore(),
+                'a' => self.insertAfter(),
+                'I' => self.insertAt(self.doc.cursorLineStart()),
+                'A' => self.insertAt(lineEnd(text, self.doc.cursorLineStart())),
+                'o' => {
+                    self.doc.openBelow();
+                    self.mode = .insert;
+                },
+                'O' => {
+                    self.doc.openAbove();
+                    self.mode = .insert;
+                },
+                'd' => self.doc.deleteSelection(),
+                'c' => {
+                    self.doc.deleteSelection();
+                    self.mode = .insert;
+                },
+                'x' => self.doc.selectLines(),
+                '%' => self.doc.selectAll(),
+                ';' => self.doc.collapse(),
+                '}' => {
+                    self.doc.selectNext();
+                    self.setStatus("{s} on {s}", .{ @tagName(self.doc.selectedKind()), self.doc.selectedRev() });
+                },
+                '{' => {
+                    self.doc.selectPrevious();
+                    self.setStatus("{s} on {s}", .{ @tagName(self.doc.selectedKind()), self.doc.selectedRev() });
+                },
+                'C' => {
+                    // By hand: another assistant turn, which `/continue` was,
+                    // with a fresh prompt after it.
+                    _ = self.doc.appendAssistantTurn() catch {};
+                    _ = self.doc.newPrompt() catch {};
+                    self.setStatus("assistant turn appended", .{});
+                },
+                else => {},
             },
-            .shift_enter => self.insertByte('\n'),
-            .left => self.cursor = self.steppedBack(self.cursor),
-            .right => self.cursor = self.steppedForward(self.cursor),
+            .alt => |letter| switch (letter) {
+                'b' => self.askSide(),
+                't' => self.readNext(),
+                'm' => self.showTags(),
+                else => {},
+            },
+            .escape => self.doc.collapse(),
+            .left => self.doc.stepTo(kitty.prevGrapheme(text, 0, self.doc.cursor)),
+            .right => self.doc.stepTo(kitty.nextGrapheme(text, self.doc.cursor)),
             .up => self.moveLine(-1),
             .down => self.moveLine(1),
-            .home => self.cursor = self.lineStart(self.lineOf(self.cursor)),
-            .end => self.cursor = self.lineEnd(self.lineOf(self.cursor)),
-            .delete => self.deleteCluster(),
-            .escape, .eof, .unknown => {},
+            .home => self.doc.stepTo(self.doc.cursorLineStart()),
+            .end => self.doc.stepTo(lineEnd(text, self.doc.cursorLineStart())),
+            .delete => self.doc.deleteSelection(),
+            .shift_enter, .eof, .unknown => {},
         }
         return false;
     }
 
-    /// Sends the prompt. A line starting with `!` runs in fish — the shell set
-    /// up for this — and anything else goes through the scripting layer's
-    /// `add_turn`, so sending a turn is a step like any other.
-    fn submit(self: *Editor) void {
-        if (self.buffer.items.len == 0) {
+    /// `i`: insert at the selection's start, keeping the selection so that
+    /// typing replaces it.
+    fn insertBefore(self: *Tui) void {
+        const range = self.doc.selection();
+        self.doc.moveCursor(range.start);
+        self.doc.anchor = range.end;
+        self.mode = .insert;
+    }
+
+    /// `a`: the same, past the selection's end.
+    fn insertAfter(self: *Tui) void {
+        const range = self.doc.selection();
+        self.doc.moveCursor(range.end);
+        self.doc.anchor = range.start;
+        self.mode = .insert;
+    }
+
+    fn insertAt(self: *Tui, index: usize) void {
+        self.doc.moveCursor(index);
+        self.mode = .insert;
+    }
+
+    // ── Insert mode ─────────────────────────────────────────────────────────
+
+    fn insertKey(self: *Tui, key: kitty.Key) bool {
+        const text = self.doc.text();
+        switch (key) {
+            .byte => |byte| switch (byte) {
+                3 => return true, // Ctrl-C
+                9 => self.mode = .command, // Tab
+                '\r', '\n' => self.submit(),
+                0x7f, 0x08 => self.backspace(),
+                else => if (byte >= 0x20) self.typeByte(byte),
+            },
+            .alt => |letter| switch (letter) {
+                'b' => self.askSide(),
+                't' => self.readNext(),
+                'm' => self.showTags(),
+                else => {},
+            },
+            .shift_enter => self.typeByte('\n'),
+            .left => self.doc.moveCursor(kitty.prevGrapheme(text, self.doc.cursorLineStart(), self.doc.cursor)),
+            .right => self.doc.moveCursor(kitty.nextGrapheme(text, self.doc.cursor)),
+            .up => self.moveLine(-1),
+            .down => self.moveLine(1),
+            .home => self.doc.moveCursor(self.doc.cursorLineStart()),
+            .end => self.doc.moveCursor(lineEnd(text, self.doc.cursorLineStart())),
+            .delete => self.doc.remove(self.doc.cursor, kitty.nextGrapheme(text, self.doc.cursor)),
+            .escape => {
+                self.mode = .normal;
+                self.doc.collapse();
+            },
+            .eof, .unknown => {},
+        }
+        return false;
+    }
+
+    /// Types a byte in insert mode. Kakoune's rule: typing replaces the
+    /// selection, so a non-empty one goes first.
+    fn typeByte(self: *Tui, byte: u8) void {
+        const range = self.doc.selection();
+        if (range.end > range.start) self.doc.deleteSelection();
+        self.doc.insertByte(byte);
+        self.doc.collapse();
+    }
+
+    /// Sends the prompt. A line starting with `!` runs in fish; anything else
+    /// goes through the scripting layer's `add_turn`. Either way the turn leaves
+    /// the prompt, the reply streams from it onto the revision, and a fresh
+    /// prompt follows.
+    fn submit(self: *Tui) void {
+        const text = self.doc.text();
+        if (text.len == 0) {
             self.status = "nothing to send";
             return;
         }
-        const bang = std.mem.startsWith(u8, self.buffer.items, "!");
+        self.status = "";
+        const sent = self.gpa.dupe(u8, text) catch return;
+        defer self.gpa.free(sent);
+        const bang = std.mem.startsWith(u8, sent, "!");
+
         const output = (if (bang)
-            ipython.fish(self.gpa, std.mem.trimStart(u8, self.buffer.items[1..], " \t"))
+            ipython.fish(self.gpa, std.mem.trimStart(u8, sent[1..], " \t"))
         else
-            ipython.addTurn(self.gpa, self.buffer.items)) catch {
+            ipython.addTurn(self.gpa, sent)) catch {
             self.status = "the scripting layer failed";
             return;
         };
         defer self.gpa.free(output);
-        self.buffer.clearRetainingCapacity();
-        self.cursor = 0;
-        self.top = 0;
-        self.show(output);
+
+        _ = self.doc.markSent();
+        if (self.stream(output)) |stream_handle| {
+            // What made this turn, as far as this side knows. The model id and
+            // the effort come from whoever runs the model; the script is what
+            // answered here.
+            self.doc.tag(stream_handle, "source", if (bang) "fish" else "add_turn") catch {};
+            self.doc.merge(stream_handle) catch {};
+        }
+        _ = self.doc.newPrompt() catch {};
+    }
+
+    /// Streams a reply in line by line, the way a model's answer arrives, and
+    /// returns its handle. The caller decides whether it joins the revision.
+    fn stream(self: *Tui, output: []const u8) ?editor.Stream {
+        if (output.len == 0) return null;
+        const stream_handle = self.doc.beginAssistant() catch return null;
+        var lines = std.mem.splitScalar(u8, output, '\n');
+        while (lines.next()) |piece| {
+            if (piece.len == 0 and lines.rest().len == 0) break; // the trailing newline
+            self.doc.appendAssistant(stream_handle, piece) catch break;
+            self.doc.appendAssistant(stream_handle, "\n") catch break;
+        }
+        return stream_handle;
+    }
+
+    fn backspace(self: *Tui) void {
+        if (self.doc.cursor == 0) return;
+        const text = self.doc.text();
+        const start = self.doc.cursorLineStart();
+        const from = if (self.doc.cursor == start) self.doc.cursor - 1 else kitty.prevGrapheme(text, start, self.doc.cursor);
+        self.doc.remove(from, self.doc.cursor);
+    }
+
+    fn moveLine(self: *Tui, delta: isize) void {
+        const text = self.doc.text();
+        const start = self.doc.cursorLineStart();
+        const cells = kitty.displayWidth(text[start..self.doc.cursor]);
+        var line_start = start;
+        var line_end = lineEnd(text, start);
+        if (delta < 0) {
+            if (start == 0) return;
+            line_end = start - 1;
+            line_start = lineStart(text, line_end);
+        } else {
+            if (line_end >= text.len) return;
+            line_start = line_end + 1;
+            line_end = lineEnd(text, line_start);
+        }
+        self.doc.moveCursor(cellAt(text[line_start..line_end], cells) + line_start);
+    }
+
+    // ── The editor's own commands, as keys ──────────────────────────────────
+
+    /// `<a-b>`: the prompt's text becomes a side question on a revision of its
+    /// own, with an assistant turn already open for the answer. The revision
+    /// being typed into is left alone.
+    fn askSide(self: *Tui) void {
+        const question = self.doc.text();
+        if (question.len == 0) {
+            self.status = "nothing to ask";
+            return;
+        }
+        _ = self.doc.beginBtw(question) catch {
+            self.status = "could not open a side question";
+            return;
+        };
+        self.doc.remove(0, question.len);
+        self.setStatus("side question: {s}", .{self.doc.revNameAt(self.doc.revCount() - 1)});
+    }
+
+    /// `<a-t>`: read the next revision — a view. Nothing is written to what is
+    /// read, and after the last one the view returns to the revision being
+    /// typed into.
+    fn readNext(self: *Tui) void {
+        const count = self.doc.revCount();
+        const next: usize = if (self.doc.reading) |reading| reading + 1 else 0;
+        if (next >= count) {
+            self.doc.stopReading();
+            self.setStatus("back at {s}", .{self.doc.revName()});
+            return;
+        }
+        _ = self.doc.readRev(next);
+        self.setStatus("reading {s}", .{self.doc.revNameAt(next)});
+    }
+
+    /// `<a-m>`: the tags on the selected turn — the model, the thinking effort
+    /// and whatever else it was generated with.
+    fn showTags(self: *Tui) void {
+        const tags = self.doc.tagsOf(self.doc.selected);
+        if (tags.len == 0) {
+            self.setStatus("{s}: no tags", .{@tagName(self.doc.selectedKind())});
+            return;
+        }
+        var length: usize = 0;
+        for (tags, 0..) |tag, i| {
+            const parts = [_][]const u8{ if (i == 0) "" else " ", tag.key, "=", tag.value };
+            for (parts) |part| {
+                for (part) |byte| {
+                    if (length >= self.status_buffer.len) break;
+                    self.status_buffer[length] = byte;
+                    length += 1;
+                }
+            }
+        }
+        self.status = self.status_buffer[0..length];
     }
 
     // ── Command mode, as IPython's ──────────────────────────────────────────
 
-    fn commandKey(self: *Editor, key: kitty.Key) bool {
+    fn commandKey(self: *Tui, key: kitty.Key) bool {
         switch (key) {
             .byte => |byte| switch (byte) {
                 3 => return true, // Ctrl-C
-                4 => self.mode = .prompt, // Ctrl-D, back to the prompt
+                4 => self.mode = .normal, // Ctrl-D, back to the tree
                 9 => self.complete(),
                 '\r', '\n' => return self.runCommand(),
                 0x7f, 0x08 => self.commandBackspace(),
@@ -157,20 +397,20 @@ const Editor = struct {
             .delete => if (self.command_cursor < self.command.items.len) {
                 _ = self.command.orderedRemove(self.command_cursor);
             },
-            .escape => self.mode = .prompt,
-            .shift_enter, .eof, .unknown => {},
+            .escape => self.mode = .normal,
+            .alt, .shift_enter, .eof, .unknown => {},
         }
         return false;
     }
 
-    fn runCommand(self: *Editor) bool {
+    fn runCommand(self: *Tui) bool {
         const line = std.mem.trim(u8, self.command.items, " \t");
         defer {
             self.command.clearRetainingCapacity();
             self.command_cursor = 0;
             self.history_offset = 0;
         }
-        self.mode = .prompt;
+        self.mode = .normal;
         if (line.len == 0) {
             self.status = "";
             return false;
@@ -180,13 +420,14 @@ const Editor = struct {
             return false;
         };
         defer self.gpa.free(output);
-        self.show(output);
+        if (output.len != 0) _ = self.doc.add(.output, output) catch {};
+        self.setStatus("{s}", .{std.mem.sliceTo(output, '\n')});
         return false;
     }
 
     /// Completes the word before the cursor from the shell, and lists what it
     /// found on the status row.
-    fn complete(self: *Editor) void {
+    fn complete(self: *Tui) void {
         const line = self.command.items;
         const output = ipython.complete(self.gpa, line, self.command_cursor) catch return;
         defer self.gpa.free(output);
@@ -195,7 +436,6 @@ const Editor = struct {
         var matches = std.mem.splitScalar(u8, output, '\n');
         const first = matches.next() orelse return;
 
-        // Replace the word before the cursor, keeping whatever follows it.
         var start = self.command_cursor;
         while (start > 0 and isWordByte(line[start - 1])) start -= 1;
         const tail = self.gpa.dupe(u8, line[self.command_cursor..]) catch return;
@@ -205,7 +445,6 @@ const Editor = struct {
         self.command.appendSlice(self.gpa, tail) catch return;
         self.command_cursor = start + first.len;
 
-        // The matches on the status row, one line turned into spaces.
         var length: usize = 0;
         for (output) |byte| {
             if (length >= self.status_buffer.len) break;
@@ -217,7 +456,7 @@ const Editor = struct {
 
     /// Walks the shell's history: up goes back, down comes forward, and coming
     /// back to the start restores the line that was being typed.
-    fn history(self: *Editor, delta: isize) void {
+    fn history(self: *Tui, delta: isize) void {
         const next = @as(isize, @intCast(self.history_offset)) + delta;
         if (next < 0) return;
         if (next == 0) {
@@ -236,202 +475,61 @@ const Editor = struct {
         self.history_offset = @intCast(next);
     }
 
-    fn setCommand(self: *Editor, text: []const u8) void {
+    fn setCommand(self: *Tui, text: []const u8) void {
         self.command.clearRetainingCapacity();
         self.command.appendSlice(self.gpa, text) catch {};
         self.command_cursor = self.command.items.len;
     }
 
-    fn commandInsert(self: *Editor, byte: u8) void {
+    fn commandInsert(self: *Tui, byte: u8) void {
         self.command.insert(self.gpa, self.command_cursor, byte) catch return;
         self.command_cursor += 1;
     }
 
-    fn commandBackspace(self: *Editor) void {
+    fn commandBackspace(self: *Tui) void {
         if (self.command_cursor == 0) return;
         _ = self.command.orderedRemove(self.command_cursor - 1);
         self.command_cursor -= 1;
     }
 
-    /// Puts what the shell printed after the prompt, and its first line on the
-    /// status row.
-    fn show(self: *Editor, output: []const u8) void {
-        if (output.len == 0) {
-            self.status = "";
-            return;
-        }
-        self.buffer.appendSlice(self.gpa, output) catch return;
-        self.cursor = self.buffer.items.len;
-        self.setStatus("{s}", .{std.mem.sliceTo(output, '\n')});
-    }
+    // ── Drawing ─────────────────────────────────────────────────────────────
 
-    // ── Editing the prompt, by grapheme ─────────────────────────────────────
-
-    fn insertByte(self: *Editor, byte: u8) void {
-        self.buffer.insert(self.gpa, self.cursor, byte) catch return;
-        self.cursor += 1;
-    }
-
-    /// Removes the cluster before the cursor, or the newline joining the line
-    /// above when the cursor is at a line start.
-    fn backspace(self: *Editor) void {
-        if (self.cursor == 0) return;
-        const line = self.lineOf(self.cursor);
-        const start = self.lineStart(line);
-        const from = if (self.cursor == start) self.cursor - 1 else self.steppedBack(self.cursor);
-        self.remove(from, self.cursor);
-    }
-
-    fn deleteCluster(self: *Editor) void {
-        if (self.cursor >= self.buffer.items.len) return;
-        self.remove(self.cursor, self.steppedForward(self.cursor));
-    }
-
-    /// Deletes `[from, to)` and leaves the cursor at `from`.
-    fn remove(self: *Editor, from: usize, to: usize) void {
-        if (to <= from) return;
-        std.mem.copyForwards(u8, self.buffer.items[from..], self.buffer.items[to..]);
-        self.buffer.items.len -= to - from;
-        self.cursor = from;
-    }
-
-    fn steppedBack(self: *Editor, index: usize) usize {
-        const line = self.lineOf(index);
-        return kitty.prevGrapheme(self.buffer.items, self.lineStart(line), index);
-    }
-
-    fn steppedForward(self: *Editor, index: usize) usize {
-        return kitty.nextGrapheme(self.buffer.items, index);
-    }
-
-    fn moveLine(self: *Editor, delta: isize) void {
-        const line = self.lineOf(self.cursor);
-        const target = @as(isize, @intCast(line)) + delta;
-        if (target < 0 or target >= @as(isize, @intCast(self.lineCount()))) return;
-        self.cursor = @min(self.lineStart(@intCast(target)) + self.cellsBefore(self.cursor), self.lineEnd(@intCast(target)));
-    }
-
-    // ── Lines, and where things sit on the screen ───────────────────────────
-
-    fn lineCount(self: *Editor) usize {
-        var count: usize = 1;
-        for (self.buffer.items) |byte| {
-            if (byte == '\n') count += 1;
-        }
-        return count;
-    }
-
-    fn lineOf(self: *Editor, index: usize) usize {
-        var line: usize = 0;
-        for (self.buffer.items[0..@min(index, self.buffer.items.len)]) |byte| {
-            if (byte == '\n') line += 1;
-        }
-        return line;
-    }
-
-    fn lineStart(self: *Editor, line: usize) usize {
-        if (line == 0) return 0;
-        var seen: usize = 0;
-        for (self.buffer.items, 0..) |byte, i| {
-            if (byte == '\n') {
-                seen += 1;
-                if (seen == line) return i + 1;
-            }
-        }
-        return self.buffer.items.len;
-    }
-
-    fn lineEnd(self: *Editor, line: usize) usize {
-        const start = self.lineStart(line);
-        if (std.mem.indexOfScalar(u8, self.buffer.items[start..], '\n')) |offset| return start + offset;
-        return self.buffer.items.len;
-    }
-
-    /// The cells between a line's start and `index`.
-    fn cellsBefore(self: *Editor, index: usize) usize {
-        const start = self.lineStart(self.lineOf(index));
-        return kitty.displayWidth(self.buffer.items[start..index]);
-    }
-
-    /// The columns a line takes, wrapped.
-    fn lineRows(self: *Editor, line: usize) usize {
-        const width = self.columns();
-        const text = self.buffer.items[self.lineStart(line)..self.lineEnd(line)];
-        var rows: usize = 1;
-        var cells: usize = 0;
-        var i: usize = 0;
-        while (i < text.len) {
-            const here = kitty.clusterWidth(text, i);
-            if (cells != 0 and cells + here > width) {
-                rows += 1;
-                cells = 0;
-            }
-            cells += here;
-            i = kitty.nextGrapheme(text, i);
-        }
-        return rows;
-    }
-
-    /// The bytes of one wrapped row of a line.
-    fn rowRange(self: *Editor, text: []const u8, target: usize) ?struct { start: usize, end: usize } {
-        const width = self.columns();
-        var row: usize = 0;
-        var start: usize = 0;
-        var cells: usize = 0;
-        var i: usize = 0;
-        while (true) {
-            if (i >= text.len) {
-                if (row == target) return .{ .start = start, .end = text.len };
-                return null;
-            }
-            const here = kitty.clusterWidth(text, i);
-            if (cells != 0 and cells + here > width) {
-                if (row == target) return .{ .start = start, .end = i };
-                row += 1;
-                start = i;
-                cells = 0;
-            }
-            cells += here;
-            i = kitty.nextGrapheme(text, i);
-        }
-    }
-
-    fn columns(self: *Editor) usize {
+    fn columns(self: *Tui) usize {
         return if (self.cols > 1) self.cols else 1;
     }
 
-    /// Where the cursor sits in display cells, with lines wrapped.
-    fn cursorDisplay(self: *Editor) struct { row: usize, col: usize } {
-        const cursor_line = self.lineOf(self.cursor);
-        var row: usize = 0;
-        var line: usize = 0;
-        while (line < cursor_line) : (line += 1) row += self.lineRows(line);
-        const cells = self.cellsBefore(self.cursor);
-        return .{ .row = row + cells / self.columns(), .col = cells % self.columns() };
-    }
-
-    // ── Drawing ─────────────────────────────────────────────────────────────
-
-    fn render(self: *Editor) void {
+    fn render(self: *Tui) void {
         if (kitty.size()) |size| {
             self.rows = size.rows;
             self.cols = size.cols;
         }
+        const width = self.columns();
         const height = if (self.rows > 3) self.rows - 2 else 1;
-        const cursor = self.cursorDisplay();
-        if (cursor.row < self.top) self.top = cursor.row;
-        if (cursor.row >= self.top + height) self.top = cursor.row + 1 - height;
+
+        const cursor_line = self.doc.cursorLine();
+        var cursor_row: usize = 0;
+        var line: usize = 0;
+        while (line < cursor_line) : (line += 1) cursor_row += rowsFor(self.doc.line(line), width);
+        const cells = kitty.displayWidth(self.doc.line(cursor_line)[0..self.doc.cursorColumn()]);
+        cursor_row += cells / width;
+        const cursor_column = cells % width;
+
+        if (cursor_row < self.top) self.top = cursor_row;
+        if (cursor_row >= self.top + height) self.top = cursor_row + 1 - height;
 
         kitty.write(kitty.erase_screen ++ kitty.cursor_home) catch {};
-        kitty.print("\x1b[7m run1 \x1b[0m {s}  {d} lines  {s} \x1b[K", .{ @tagName(self.mode), self.lineCount(), self.status });
+        kitty.print("\x1b[7m run1 \x1b[0m {s} {s} ", .{ @tagName(self.mode), self.doc.revName() });
+        if (self.doc.readingName()) |name| kitty.print("(reading {s}) ", .{name});
+        if (self.doc.streamCount() != 0) kitty.print("{d} streaming  ", .{self.doc.streamCount()});
+        kitty.print("{s} \x1b[K", .{self.status});
 
         var display: usize = 0;
         var drawn: usize = 0;
-        var line: usize = 0;
-        outer: while (line < self.lineCount()) : (line += 1) {
-            const text = self.buffer.items[self.lineStart(line)..self.lineEnd(line)];
+        line = 0;
+        outer: while (line < self.doc.lineCount()) : (line += 1) {
+            const text = self.doc.line(line);
             var row: usize = 0;
-            while (self.rowRange(text, row)) |range| : (row += 1) {
+            while (rowRange(text, row, width)) |range| : (row += 1) {
                 if (display < self.top) {
                     display += 1;
                     continue;
@@ -449,11 +547,110 @@ const Editor = struct {
             kitty.print(":{s}", .{self.command.items});
             kitty.print("\x1b[{d};{d}H", .{ self.rows, self.command_cursor + 2 });
         } else {
-            kitty.print("\x1b[{d};{d}H", .{ 2 + (cursor.row - self.top), cursor.col + 1 });
+            kitty.print("\x1b[{d};{d}H", .{ 2 + (cursor_row - self.top), cursor_column + 1 });
         }
     }
 };
 
+/// Whether a byte is part of a word, for the word motions.
 fn isWordByte(byte: u8) bool {
-    return std.ascii.isAlphanumeric(byte) or byte == '.' or byte == '_';
+    return std.ascii.isAlphanumeric(byte) or byte == '_';
+}
+
+/// `w`: past this word, then past the whitespace, to the next word's start.
+fn wordForward(text: []const u8, index: usize) usize {
+    var at = index;
+    if (at < text.len) at = kitty.nextGrapheme(text, at);
+    while (at < text.len and isWordByte(text[at])) at = kitty.nextGrapheme(text, at);
+    while (at < text.len and !isWordByte(text[at]) and text[at] != '\n') at = kitty.nextGrapheme(text, at);
+    return at;
+}
+
+/// `b`: back over the whitespace, then to this word's start.
+fn wordBack(text: []const u8, index: usize) usize {
+    var at = index;
+    while (at > 0) {
+        const previous = kitty.prevGrapheme(text, 0, at);
+        if (isWordByte(text[previous])) break;
+        at = previous;
+    }
+    while (at > 0) {
+        const previous = kitty.prevGrapheme(text, 0, at);
+        if (!isWordByte(text[previous])) break;
+        at = previous;
+    }
+    return at;
+}
+
+/// `e`: past the whitespace, then to the end of the word there.
+fn wordEnd(text: []const u8, index: usize) usize {
+    var at = index;
+    while (at < text.len and !isWordByte(text[at])) at = kitty.nextGrapheme(text, at);
+    while (at < text.len and isWordByte(text[at])) at = kitty.nextGrapheme(text, at);
+    return at;
+}
+
+/// The byte index where the line starting at `start` ends.
+fn lineEnd(text: []const u8, start: usize) usize {
+    if (std.mem.indexOfScalar(u8, text[start..], '\n')) |offset| return start + offset;
+    return text.len;
+}
+
+/// The byte index where the line containing `index` starts.
+fn lineStart(text: []const u8, index: usize) usize {
+    return (std.mem.lastIndexOfScalar(u8, text[0..index], '\n') orelse return 0) + 1;
+}
+
+/// The byte index in `text` whose display cells reach `cells`, staying inside
+/// the line.
+fn cellAt(text: []const u8, cells: usize) usize {
+    var at: usize = 0;
+    var seen: usize = 0;
+    while (at < text.len) {
+        const here = kitty.clusterWidth(text, at);
+        if (seen + here > cells) break;
+        seen += here;
+        at = kitty.nextGrapheme(text, at);
+    }
+    return at;
+}
+
+/// The display rows a line takes at `width` columns.
+fn rowsFor(text: []const u8, width: usize) usize {
+    var rows: usize = 1;
+    var cells: usize = 0;
+    var at: usize = 0;
+    while (at < text.len) {
+        const here = kitty.clusterWidth(text, at);
+        if (cells != 0 and cells + here > width) {
+            rows += 1;
+            cells = 0;
+        }
+        cells += here;
+        at = kitty.nextGrapheme(text, at);
+    }
+    return rows;
+}
+
+/// The bytes of one wrapped row of a line.
+fn rowRange(text: []const u8, target: usize, width: usize) ?struct { start: usize, end: usize } {
+    var row: usize = 0;
+    var start: usize = 0;
+    var cells: usize = 0;
+    var at: usize = 0;
+    while (true) {
+        if (at >= text.len) {
+            if (row == target) return .{ .start = start, .end = text.len };
+            return null;
+        }
+        const here = kitty.clusterWidth(text, at);
+        if (cells != 0 and cells + here > width) {
+            if (row == target) return .{ .start = start, .end = at };
+            row += 1;
+            start = at;
+            cells = 0;
+        }
+        cells += here;
+        at = kitty.nextGrapheme(text, at);
+    }
 }
