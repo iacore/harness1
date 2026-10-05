@@ -5,8 +5,10 @@
 Commit the moment a stage is finished — a rename, a refactor, a probe, one file
 — and commit frequently through a long sequence rather than batching it at the
 end. Work left uncommitted is work the next edit can overwrite and a crash can
-take. This binds every agent that works on run1: stop with the tree clean, and
-never leave a stage uncommitted for the next one to build on.
+take; a change left in the working tree is not done, because the next reader
+cannot see it and the next turn cannot build on it. This binds every agent that
+works on run1: stop with the tree clean, and never leave a stage uncommitted for
+the next one to build on.
 
 ## Be precise over cheap
 

@@ -20,6 +20,7 @@
         "build.zig.zon",
         "COPYING.md",
         "core/root.zig",
+        "core/world.zig",
         "core/curl.zig",
         "core/curl_shim.c",
         "core/json_encoder.zig",

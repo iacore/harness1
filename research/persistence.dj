@@ -66,7 +66,9 @@ pointer-addressable, kernel-written, cheap to fork. The kernel offers no per-uni
 integrity, so "corruption is local" is entirely our own checksums over our own
 layout.
 
-*Two spines, unresolved.* Either the mapped region *is* the memory image — the
-bytes are the typed values, no decode, and no JSON/Ion/protobuf as the store —
-or the file is a serialization decoded at open. Which one this is decides the
-encoding, and it is not yet decided.
+*One spine, and it is taken.* The mapped region *is* the memory image — the
+bytes are the typed values, with no decode and no JSON, Ion or protobuf as the
+store. `core/world.zig` maps a file `MAP_SHARED`: its first four words a header
+(magic, version, used, root), `Ref` a `u64` byte offset into the mapping, and the
+open-time check a structural scan of that image rather than a decode into Zig
+types.
