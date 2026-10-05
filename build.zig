@@ -54,11 +54,28 @@ pub fn build(b: *std.Build) void {
 
 /// Only the declarations `src/root.zig` re-exports are reachable by an
 /// importer, so anything meant to be public has to be named there.
+///
+/// The transport is libcurl, because the endpoint serves HTTP/2 and Zig's
+/// `std.http.Client` speaks HTTP/1.1 only; see `src/remote/curl.zig` and
+/// `research/http-client.dj`. That makes the module link libc and the system
+/// libcurl, and a consumer of the package has to have both. The header reaches
+/// Zig through translate-c, since 0.17 removed `@cImport`.
 pub fn harnessModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
-    return b.addModule("harness1", .{
+    const mod = b.addModule("harness1", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
+        .link_libc = true,
     });
+    const curl_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/curl_shim.c"),
+        .target = target,
+        .optimize = .Debug,
+        .link_libc = true,
+    });
+    curl_c.linkSystemLibrary("curl", .{});
+    mod.addImport("curl", curl_c.createModule());
+    mod.linkSystemLibrary("curl", .{});
+    return mod;
 }
 
 /// omp's store is a SQLite database, and reading it is left to a Python helper

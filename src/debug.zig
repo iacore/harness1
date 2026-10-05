@@ -44,6 +44,9 @@ pub fn writeLine(
 }
 
 /// A logger that writes to `out`.
-pub fn writer(out: *Io.Writer) DebugLogger(writeLine) {
+pub fn writer(out: *Io.Writer) Logger {
     return .{ .context = out };
 }
+
+/// The logger `writer` builds, named so a parameter or field can hold it.
+pub const Logger = DebugLogger(writeLine);

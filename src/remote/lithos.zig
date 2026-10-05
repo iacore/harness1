@@ -27,12 +27,16 @@
 //!   * The API returns two error shapes: its own `{error:{...}}` and the
 //!     inference engine's raw `{object:"error",...,code:<int>}` passthrough.
 //!     `APIError` carries which one it read, so a caller can tell them apart.
-//!   * The client, like `std.http.Client` under it, is safe for concurrent
-//!     use; individual `Response` values are not.
+//!   * HTTP/2 is required. The transport (`src/curl.zig`) offers `h2` in ALPN
+//!     and aborts a connection that negotiates anything else, because libcurl
+//!     alone would fall back to HTTP/1.1 in silence (research/http-client.dj).
+//!   * The client is safe for concurrent use — every request gets its own
+//!     thread and state; individual `Response` values are not.
 
 const std = @import("std");
 const Io = std.Io;
-const http = std.http;
+const curl = @import("../curl.zig");
+const debug = @import("../debug.zig");
 const Allocator = std.mem.Allocator;
 
 const json_encoder = @import("../json_encoder.zig");
@@ -186,12 +190,12 @@ fn stringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
 }
 
 /// What a call produced, or why it did not.
-pub fn Result(comptime Success: type, comptime Failure: type) type {
+pub fn Result(comptime Success: type, comptime Err: type) type {
     return union(enum) {
         ok: Success,
-        err: Failure,
+        err: Err,
 
-        pub fn failure(self: @This()) ?Failure {
+        pub fn failure(self: @This()) ?Err {
             return switch (self) {
                 .ok => null,
                 .err => |why| why,
@@ -199,6 +203,37 @@ pub fn Result(comptime Success: type, comptime Failure: type) type {
         }
     };
 }
+
+/// Why a call produced no value. A transport state is a value rather than a
+/// Zig error, because the states are not interchangeable: an endpoint that
+/// does not serve HTTP/2 is not retried, a stalled transfer is.
+pub const Failure = union(enum) {
+    /// The transport produced no response; the state says why.
+    transport: curl.Failure,
+    /// The API answered with one of its two error shapes.
+    api: APIError,
+    /// The request was rejected before it was sent.
+    invalid: chat.Invalid,
+    /// `stream` was set; a streamed request goes through `chat.sendStream`.
+    stream_requested,
+
+    pub fn format(self: Failure, writer: *Io.Writer) Io.Writer.Error!void {
+        switch (self) {
+            .transport => |state| try writer.print("transport: {s}", .{@tagName(state)}),
+            .api => |envelope| try envelope.format(writer),
+            .invalid => |invalid| try invalid.format(writer),
+            .stream_requested => try writer.writeAll("Request.stream is true; use sendStream"),
+        }
+    }
+};
+
+/// What a request produced: a response to read, the API's own error envelope,
+/// or the transport's failure state.
+const Attempt = union(enum) {
+    response: *Response,
+    api_error: APIError,
+    transport: curl.Failure,
+};
 
 /// A stream result that owns everything in `value`.
 pub fn Collected(comptime T: type) type {
@@ -258,12 +293,24 @@ pub const Client = struct {
     api_key: []const u8,
     /// The API root without a trailing slash; caller-owned.
     base_url: []const u8,
-    http_client: http.Client,
+    curl_client: curl.Client,
 
     pub const Options = struct {
         /// Another API root, such as a self-hosted engine. A trailing slash
         /// is optional. The default is `default_base_url`.
         base_url: ?[]const u8 = null,
+        /// Require HTTP/2 rather than prefer it; see `curl.Options`. A
+        /// connection that negotiates anything else ends as
+        /// `Failure.transport` = `.endpoint_broken`, and the client marks the
+        /// endpoint so no later request is sent.
+        require_h2: bool = false,
+        /// Bound on connection establishment, in milliseconds. See
+        /// `curl.Options`.
+        connect_timeout_ms: ?u64 = null,
+        /// Abort a request whose body stalls this long. See `curl.Options`.
+        idle_timeout_ms: ?u64 = null,
+        /// Where each request's timings and failures are reported.
+        log: ?debug.Logger = null,
     };
 
     pub const InitError = error{
@@ -280,13 +327,18 @@ pub const Client = struct {
             .io = io,
             .api_key = api_key,
             .base_url = std.mem.trimEnd(u8, base, "/"),
-            .http_client = .{ .allocator = allocator, .io = io },
+            .curl_client = curl.Client.init(allocator, io, .{
+                .require_h2 = options.require_h2,
+                .connect_timeout_ms = options.connect_timeout_ms,
+                .idle_timeout_ms = options.idle_timeout_ms,
+                .log = options.log,
+            }),
         };
     }
 
     /// All responses must be deinited first.
     pub fn deinit(self: *Client) void {
-        self.http_client.deinit();
+        self.curl_client.deinit();
         self.* = undefined;
     }
 
@@ -296,20 +348,19 @@ pub const Client = struct {
     /// `accept_sse` asks for a streamed response.
     fn fetch(
         self: *Client,
-        method: http.Method,
+        method: curl.Method,
         path: []const u8,
         payload: ?[]const u8,
         accept_sse: bool,
-    ) !Result(*Response, APIError) {
+    ) Allocator.Error!Attempt {
         const gpa = self.allocator;
         const url = try std.fmt.allocPrint(gpa, "{s}{s}", .{ self.base_url, path });
         defer gpa.free(url);
-        const uri = try std.Uri.parse(url);
 
         const bearer = try std.fmt.allocPrint(gpa, "Bearer {s}", .{self.api_key});
         defer gpa.free(bearer);
 
-        var headers: [3]http.Header = undefined;
+        var headers: [3]curl.Header = undefined;
         var count: usize = 0;
         headers[count] = .{ .name = "authorization", .value = bearer };
         count += 1;
@@ -322,80 +373,66 @@ pub const Client = struct {
             count += 1;
         }
 
-        const request = try gpa.create(http.Client.Request);
-        errdefer gpa.destroy(request);
-        request.* = try self.http_client.request(method, uri, .{
-            .extra_headers = headers[0..count],
-            // A redirect means the root is misconfigured; the API never
-            // redirects these.
-            .redirect_behavior = .not_allowed,
-        });
-        errdefer request.deinit();
+        // The transport reports states, not errors; a broken endpoint and a
+        // stalled transfer are different things to the caller.
+        const transport = switch (self.curl_client.request(
+            method,
+            url,
+            headers[0..count],
+            payload,
+            // A stream hands bytes out as they arrive, so it cannot be
+            // replayed; everything else is read whole and can be.
+            if (accept_sse) .stream else .complete,
+        )) {
+            .streaming => |response| response,
+            .failure => |failure| return .{ .transport = failure },
+        };
+        errdefer transport.deinit();
 
-        if (payload) |body_bytes| {
-            request.transfer_encoding = .{ .content_length = body_bytes.len };
-            var body = try request.sendBody(&.{});
-            try body.writer.writeAll(body_bytes);
-            try body.end();
-            try request.connection.?.flush();
-        } else {
-            try request.sendBodiless();
-        }
-
-        var head = try request.receiveHead(&.{});
-        const status: u16 = @backingInt(head.head.status);
+        const status = transport.status();
         if (status < 200 or status >= 300) {
-            const envelope = try self.readApiError(&head);
-            request.deinit();
-            gpa.destroy(request);
-            return .{ .err = envelope };
+            const envelope = try readApiError(gpa, transport);
+            transport.deinit();
+            return .{ .api_error = envelope };
         }
 
         const response = try gpa.create(Response);
         errdefer gpa.destroy(response);
-        const transfer_buffer = try gpa.alloc(u8, 4096);
-        errdefer gpa.free(transfer_buffer);
-        const rate_limits = try parseRateLimits(gpa, &head);
+        const rate_limits = try parseRateLimits(gpa, transport);
         errdefer {
             var limits = rate_limits;
             limits.deinit(gpa);
         }
         response.* = .{
             .allocator = gpa,
-            .request = request,
-            .head = head,
-            .transfer_buffer = transfer_buffer,
+            .transport = transport,
             .rate_limits = rate_limits,
         };
-        return .{ .ok = response };
-    }
-
-    fn readApiError(self: *Client, head: *http.Client.Response) !APIError {
-        // The retry headers are read first: initializing the body reader below
-        // invalidates the header bytes they point into.
-        const retry_after = headerInt(head, "retry-after");
-        const retry_after_ms = headerInt(head, "retry-after-ms");
-        const should_retry = headerBool(head, "x-should-retry");
-
-        var buffer: [max_error_body]u8 = undefined;
-        var transfer: [512]u8 = undefined;
-        const length = readUpTo(head.reader(&transfer), &buffer);
-        var envelope = try parseError(self.allocator, @backingInt(head.head.status), buffer[0..length]);
-        envelope.retry_after = retry_after;
-        envelope.retry_after_ms = retry_after_ms;
-        envelope.should_retry = should_retry;
-        return envelope;
+        return .{ .response = response };
     }
 };
+
+/// Reads the error envelope from a non-2xx response and drains its body.
+fn readApiError(allocator: Allocator, transport: *curl.Response) !APIError {
+    const retry_after = headerInt(transport, "retry-after");
+    const retry_after_ms = headerInt(transport, "retry-after-ms");
+    const should_retry = headerBool(transport, "x-should-retry");
+
+    var buffer: [max_error_body]u8 = undefined;
+    const length = readUpTo(transport.reader(), &buffer);
+    var envelope = try parseError(allocator, transport.status(), buffer[0..length]);
+    envelope.retry_after = retry_after;
+    envelope.retry_after_ms = retry_after_ms;
+    envelope.should_retry = should_retry;
+    return envelope;
+}
 
 /// A body that breaks partway is not an error here: what arrived is what the
 /// caller has. The count comes from the writes, not from the buffer's length,
 /// because an allocation is not zeroed and the tail would be uninitialized.
 ///
-/// A read that returns zero has moved the reader along without handing bytes
-/// over yet — what a reader that fills its own buffer first does, and what
-/// every TLS connection's reader does — so it is a round to come back for
-/// rather than the end of the body.
+/// The body's end arrives as `error.EndOfStream`, which breaks the loop; a
+/// zero return would mean "nothing yet", and looping on it would spin.
 fn readUpTo(reader: *Io.Reader, buffer: []u8) usize {
     var writer = Io.Writer.fixed(buffer);
     var length: usize = 0;
@@ -406,22 +443,17 @@ fn readUpTo(reader: *Io.Reader, buffer: []u8) usize {
     return length;
 }
 
-/// Names compare case-insensitively.
-fn headerValue(head: *const http.Client.Response, name: []const u8) ?[]const u8 {
-    var iterator = head.head.iterateHeaders();
-    while (iterator.next()) |header| {
-        if (std.ascii.eqlIgnoreCase(header.name, name)) return header.value;
-    }
-    return null;
+fn headerValue(transport: *const curl.Response, name: []const u8) ?[]const u8 {
+    return transport.header(name);
 }
 
-fn headerInt(head: *const http.Client.Response, name: []const u8) ?i64 {
-    const value = headerValue(head, name) orelse return null;
+fn headerInt(transport: *const curl.Response, name: []const u8) ?i64 {
+    const value = headerValue(transport, name) orelse return null;
     return std.fmt.parseInt(i64, std.mem.trim(u8, value, " \t"), 10) catch null;
 }
 
-fn headerBool(head: *const http.Client.Response, name: []const u8) ?bool {
-    const value = headerValue(head, name) orelse return null;
+fn headerBool(transport: *const curl.Response, name: []const u8) ?bool {
+    const value = headerValue(transport, name) orelse return null;
     const trimmed = std.mem.trim(u8, value, " \t");
     if (std.ascii.eqlIgnoreCase(trimmed, "true")) return true;
     if (std.ascii.eqlIgnoreCase(trimmed, "false")) return false;
@@ -429,18 +461,18 @@ fn headerBool(head: *const http.Client.Response, name: []const u8) ?bool {
 }
 
 /// Best-effort: a header that is absent or unparsable stays null.
-fn parseRateLimits(allocator: Allocator, head: *const http.Client.Response) !RateLimits {
+fn parseRateLimits(allocator: Allocator, transport: *const curl.Response) !RateLimits {
     var limits: RateLimits = .{
-        .limit_requests = headerInt(head, "x-ratelimit-limit-requests"),
-        .remaining_requests = headerInt(head, "x-ratelimit-remaining-requests"),
-        .limit_tokens = headerInt(head, "x-ratelimit-limit-tokens"),
-        .remaining_tokens = headerInt(head, "x-ratelimit-remaining-tokens"),
+        .limit_requests = headerInt(transport, "x-ratelimit-limit-requests"),
+        .remaining_requests = headerInt(transport, "x-ratelimit-remaining-requests"),
+        .limit_tokens = headerInt(transport, "x-ratelimit-limit-tokens"),
+        .remaining_tokens = headerInt(transport, "x-ratelimit-remaining-tokens"),
     };
     errdefer limits.deinit(allocator);
-    if (headerValue(head, "x-ratelimit-reset-requests")) |value| {
+    if (headerValue(transport, "x-ratelimit-reset-requests")) |value| {
         limits.reset_requests = try allocator.dupe(u8, value);
     }
-    if (headerValue(head, "x-ratelimit-reset-tokens")) |value| {
+    if (headerValue(transport, "x-ratelimit-reset-tokens")) |value| {
         limits.reset_tokens = try allocator.dupe(u8, value);
     }
     return limits;
@@ -449,9 +481,7 @@ fn parseRateLimits(allocator: Allocator, head: *const http.Client.Response) !Rat
 /// A response to a 2xx request whose body has not been read yet.
 pub const Response = struct {
     allocator: Allocator,
-    request: *http.Client.Request,
-    head: http.Client.Response,
-    transfer_buffer: []u8,
+    transport: *curl.Response,
     rate_limits: RateLimits,
 
     /// Anything read out of the body before this call stays valid; the body
@@ -459,14 +489,12 @@ pub const Response = struct {
     pub fn deinit(self: *Response) void {
         const allocator = self.allocator;
         self.rate_limits.deinit(allocator);
-        self.request.deinit();
-        allocator.destroy(self.request);
-        allocator.free(self.transfer_buffer);
+        self.transport.deinit();
         allocator.destroy(self);
     }
 
     pub fn status(self: *const Response) u16 {
-        return @backingInt(self.head.head.status);
+        return self.transport.status();
     }
 
     pub fn rateLimits(self: *const Response) RateLimits {
@@ -475,11 +503,7 @@ pub const Response = struct {
 
     /// May be called once.
     pub fn reader(self: *Response) *Io.Reader {
-        return self.head.reader(self.transfer_buffer);
-    }
-
-    pub fn bodyErr(self: *Response) ?http.Reader.BodyError {
-        return self.head.bodyErr();
+        return self.transport.reader();
     }
 
     /// The returned value owns its strings and must be deinited.
@@ -653,10 +677,11 @@ pub const models = struct {
     };
 
     /// Credential-scoped: the endpoint answers 401 without a valid key.
-    pub fn list(client: *Client) !Result(std.json.Parsed(List), APIError) {
+    pub fn list(client: *Client) !Result(std.json.Parsed(List), Failure) {
         const response = switch (try client.fetch(.GET, path, null, false)) {
-            .ok => |response| response,
-            .err => |envelope| return .{ .err = envelope },
+            .response => |response| response,
+            .api_error => |envelope| return .{ .err = .{ .api = envelope } },
+            .transport => |failure| return .{ .err = .{ .transport = failure } },
         };
         defer response.deinit();
         return .{ .ok = try response.parse(List) };
@@ -664,13 +689,14 @@ pub const models = struct {
 
     /// The id is sent as the two path segments it already is, e.g.
     /// `moonshotai/Kimi-K3`.
-    pub fn retrieve(client: *Client, id: []const u8) !Result(std.json.Parsed(Model), APIError) {
+    pub fn retrieve(client: *Client, id: []const u8) !Result(std.json.Parsed(Model), Failure) {
         const arena = client.allocator;
         const endpoint = try std.fmt.allocPrint(arena, "{s}/{s}", .{ path, id });
         defer arena.free(endpoint);
         const response = switch (try client.fetch(.GET, endpoint, null, false)) {
-            .ok => |response| response,
-            .err => |envelope| return .{ .err = envelope },
+            .response => |response| response,
+            .api_error => |envelope| return .{ .err = .{ .api = envelope } },
+            .transport => |failure| return .{ .err = .{ .transport = failure } },
         };
         defer response.deinit();
         return .{ .ok = try response.parse(Model) };
@@ -1137,25 +1163,6 @@ pub const chat = struct {
         }
     };
 
-    /// What a chat call failed with, when it is part of the API's contract
-    /// rather than an allocation or a socket.
-    pub const Failure = union(enum) {
-        /// The request breaks a documented bound; see `Invalid.format`.
-        invalid: Invalid,
-        /// The API answered with an error envelope.
-        api: APIError,
-        /// The request asked for streaming; call `sendStream` instead.
-        stream_requested,
-
-        pub fn format(self: Failure, writer: *Io.Writer) Io.Writer.Error!void {
-            switch (self) {
-                .invalid => |invalid| try invalid.format(writer),
-                .api => |envelope| try envelope.format(writer),
-                .stream_requested => try writer.writeAll("Request.stream is true; use sendStream"),
-            }
-        }
-    };
-
     // -- Responses ----------------------------------------------------------
 
     /// A message generated by the model. The two text fields are null wherever
@@ -1239,8 +1246,9 @@ pub const chat = struct {
         const payload = try json_encoder.stringify(client.allocator, request.*);
         defer client.allocator.free(payload);
         const response = switch (try client.fetch(.POST, path, payload, false)) {
-            .ok => |response| response,
-            .err => |envelope| return .{ .err = .{ .api = envelope } },
+            .response => |response| response,
+            .api_error => |envelope| return .{ .err = .{ .api = envelope } },
+            .transport => |failure| return .{ .err = .{ .transport = failure } },
         };
         defer response.deinit();
         return .{ .ok = try response.parse(Completion) };
@@ -1255,8 +1263,9 @@ pub const chat = struct {
         const payload = try json_encoder.stringify(client.allocator, &body);
         defer client.allocator.free(payload);
         const response = switch (try client.fetch(.POST, path, payload, true)) {
-            .ok => |response| response,
-            .err => |envelope| return .{ .err = .{ .api = envelope } },
+            .response => |response| response,
+            .api_error => |envelope| return .{ .err = .{ .api = envelope } },
+            .transport => |failure| return .{ .err = .{ .transport = failure } },
         };
         return .{ .ok = .{ .inner = newEventStream(Chunk, response) } };
     }
