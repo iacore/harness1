@@ -32,7 +32,9 @@ program that is neither installed by the default build nor built with it, run
 from the repository root with
 `zig build --build-file ./build.research.zig deepseek_playground`, so `zig build`
 stays off the network and builds only the harness. Add a scratch program beside
-it, and its step to `build.research.zig`. That file imports `build.zig`, so use
+it, and its step to `build.research.zig`. Every research program lives under
+`research/` — never beside the code it probes, however close the tie (a probe of
+`ui/kitty.zig` still goes in `research/`, importing it as a module). That file imports `build.zig`, so use
 its `harnessModule` and `installOmpKeys` rather than duplicating the module or
 the credential install. Do not use `research/python/` for experiments; its whole
 purpose is now gone.

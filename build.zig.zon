@@ -9,24 +9,24 @@
     .dependencies = .{},
     // What the package hash covers, and so all that a consumer of it receives:
     // what it takes to compile, plus the licence and the per-model notes under
-    // `src/remote/` that a user of the client reads. Developer-only source is
+    // `core/remote/` that a user of the client reads. Developer-only source is
     // left out — the research programs under `research`, the Python
     // scratch client under `research/python`, and `build.research.zig`, which drives
-    // them. The program under `cmd` is developer-only as well. `src/` is named
+    // them. The program under `ui` is developer-only as well. `core/` is named
     // file by file: every file the library reaches must be listed here, and
     // `zig build test` enforces that by rebuilding the package from this list.
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "COPYING.md",
-        "src/root.zig",
-        "src/curl.zig",
-        "src/curl_shim.c",
-        "src/json_encoder.zig",
-        "src/omp_features.zig",
-        "src/turns.zig",
-        "src/system_prompt.zig",
-        "src/debug.zig",
-        "src/remote",
+        "core/root.zig",
+        "core/curl.zig",
+        "core/curl_shim.c",
+        "core/json_encoder.zig",
+        "core/omp_features.zig",
+        "core/turns.zig",
+        "core/system_prompt.zig",
+        "core/debug.zig",
+        "core/remote",
     },
 }

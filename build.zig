@@ -15,14 +15,14 @@ pub fn build(b: *std.Build) void {
     const mod_tests = b.addTest(.{ .root_module = mod });
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
 
-    // `cmd` is developer-only: the published package carries the library and no
+    // `ui` is developer-only: the published package carries the library and no
     // program, so the exe exists only in a checkout that has it.
-    if (b.root.access(b.graph.io, "cmd/main_tui.zig", .{})) |_| {
-        b.dependOnDirectoryContents(b.path("cmd"));
+    if (b.root.access(b.graph.io, "ui/main.zig", .{})) |_| {
+        b.dependOnDirectoryContents(b.path("ui"));
         const exe = b.addExecutable(.{
             .name = "run1",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("cmd/main_tui.zig"),
+                .root_source_file = b.path("ui/main.zig"),
                 .target = target,
                 .optimize = optimize,
                 .imports = &.{
@@ -52,22 +52,22 @@ pub fn build(b: *std.Build) void {
     // published package and out of `zig build -l`.
 }
 
-/// Only the declarations `src/root.zig` re-exports are reachable by an
+/// Only the declarations `core/root.zig` re-exports are reachable by an
 /// importer, so anything meant to be public has to be named there.
 ///
 /// The transport is libcurl, because the endpoint serves HTTP/2 and Zig's
-/// `std.http.Client` speaks HTTP/1.1 only; see `src/remote/curl.zig` and
+/// `std.http.Client` speaks HTTP/1.1 only; see `core/remote/curl.zig` and
 /// `research/http-client.dj`. That makes the module link libc and the system
 /// libcurl, and a consumer of the package has to have both. The header reaches
 /// Zig through translate-c, since 0.17 removed `@cImport`.
 pub fn harnessModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Module {
     const mod = b.addModule("run1", .{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("core/root.zig"),
         .target = target,
         .link_libc = true,
     });
     const curl_c = b.addTranslateC(.{
-        .root_source_file = b.path("src/curl_shim.c"),
+        .root_source_file = b.path("core/curl_shim.c"),
         .target = target,
         .optimize = .Debug,
         .link_libc = true,
@@ -81,18 +81,18 @@ pub fn harnessModule(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build
 /// omp's store is a SQLite database, and reading it is left to a Python helper
 /// rather than to a linked library: the build stays free of SQL, and of libc
 /// with it. Not installed to `bin`, because it is not a program — the harness
-/// runs it through `python3`. src/remote/keys.zig looks for exactly this path
+/// runs it through `python3`. core/remote/keys.zig looks for exactly this path
 /// under the install root, so the two have to agree.
 pub fn installOmpKeys(b: *std.Build) *std.Build.Step.InstallFile {
     return b.addInstallFileWithDir(
-        b.path("src/remote/omp-keys.py"),
+        b.path("core/remote/omp-keys.py"),
         .lib,
         "run1/omp-keys.py",
     );
 }
 
 /// What a consumer of the package receives is `build.zig.zon`'s `.paths` and
-/// nothing else — `cmd` is developer-only, and the program is gated on it. A
+/// nothing else — `ui` is developer-only, and the program is gated on it. A
 /// whitelisted tree can still fail to build when a shipped file reaches for one
 /// that was left out, and no ordinary build of the dev tree catches that, so
 /// the tests rebuild the package from the whitelist alone under a scratch

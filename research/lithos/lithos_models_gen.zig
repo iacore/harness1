@@ -18,7 +18,7 @@ const keys = run1.keys;
 const debug = run1.debug;
 
 /// Relative to the build root.
-const output_path = "src/remote/lithos_models.zig";
+const output_path = "core/remote/lithos_models.zig";
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;

@@ -74,7 +74,7 @@ pub fn build(b: *std.Build) void {
     run_search.step.dependOn(&credentials.step);
     search_step.dependOn(&run_search.step);
 
-    // Rewrites src/remote/lithos_models.zig in place, which the library's build
+    // Rewrites core/remote/lithos_models.zig in place, which the library's build
     // then compiles as ordinary source — installation does not depend on
     // generation.
     const lithos_models_exe = b.addExecutable(.{
@@ -88,7 +88,7 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-    _ = addRunStep(b, lithos_models_exe, &credentials.step, "lithos_models", "Regenerate src/remote/lithos_models.zig from GET /v1/models");
+    _ = addRunStep(b, lithos_models_exe, &credentials.step, "lithos_models", "Regenerate core/remote/lithos_models.zig from GET /v1/models");
 
     const lithos_probe_exe = b.addExecutable(.{
         .name = "lithos_probe",
@@ -168,8 +168,21 @@ pub fn build(b: *std.Build) void {
     });
     _ = addRunStep(b, turns_probe_exe, &credentials.step, "turns_probe", "Compare one system turn against one per instruction section");
 
+    const kitty_probe_exe = b.addExecutable(.{
+        .name = "kitty_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/kitty_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "kitty", .module = kittyModule(b, target, optimize) },
+            },
+        }),
+    });
+    _ = addRunStep(b, kitty_probe_exe, &credentials.step, "kitty_probe", "Clear the kitty scrollback and print text in one transaction");
+
     // Ties the harness's transport to the system libcurl for the first time:
-    // if this does not negotiate h2, nothing in `src/` will. Zig 0.17 has no
+    // if this does not negotiate h2, nothing in `core/` will. Zig 0.17 has no
     // `@cImport`, so the header reaches Zig through translate-c.
     const curl_translate = b.addTranslateC(.{
         .root_source_file = b.path("research/curl_shim.c"),
@@ -301,4 +314,14 @@ fn addRunStep(
     run.step.dependOn(credentials);
     step.dependOn(&run.step);
     return run;
+}
+
+/// The UI's terminal layer as a module, so a research program probes it without
+/// reaching outside its own module root.
+fn kittyModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("ui/kitty.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 }
