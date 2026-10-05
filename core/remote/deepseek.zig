@@ -1177,6 +1177,24 @@ pub const chat = struct {
         arguments: []const u8 = "",
     };
 
+    /// One fragment of a tool call in a streamed delta. Only the index is
+    /// always there: the first fragment carries the id and the name, the ones
+    /// after it carry argument text, and the endpoint sends JSON null for the
+    /// parts a fragment does not repeat.
+    pub const ToolCallFragment = struct {
+        index: ?i64 = null,
+        id: ?[]const u8 = null,
+        type: ?[]const u8 = null,
+        function: FunctionCallFragment = .{},
+    };
+
+    /// The name and the argument text of one tool-call fragment, either of
+    /// which may be null.
+    pub const FunctionCallFragment = struct {
+        name: ?[]const u8 = null,
+        arguments: ?[]const u8 = null,
+    };
+
     /// Selects the tool the model must call.
     pub const ToolChoice = union(enum) {
         mode: Mode,
@@ -1805,10 +1823,10 @@ pub const chat = struct {
     /// chunk of the chain of thought carries `"content": null`, and every chunk
     /// of the answer that follows carries `"reasoning_content": null`.
     pub const Delta = struct {
-        role: []const u8 = "",
+        role: ?[]const u8 = null,
         content: ?[]const u8 = null,
         reasoning_content: ?[]const u8 = null,
-        tool_calls: []const ToolCall = &.{},
+        tool_calls: ?[]const ToolCallFragment = null,
     };
 
     /// Sends a non-streaming request. A request that asks for streaming is
@@ -1954,13 +1972,15 @@ pub const chat = struct {
 
         fn merge(self: *Accumulator, arena: Allocator, choice: ChunkChoice) !void {
             const delta = choice.delta;
-            if (delta.role.len != 0) self.role = try arena.dupe(u8, delta.role);
+            if (delta.role) |role| {
+                if (role.len != 0) self.role = try arena.dupe(u8, role);
+            }
             try self.content.appendSlice(arena, delta.content orelse "");
             if (delta.reasoning_content) |reasoning| {
                 self.saw_reasoning = true;
                 try self.reasoning_content.appendSlice(arena, reasoning);
             }
-            for (delta.tool_calls) |call| {
+            for (delta.tool_calls orelse &.{}) |call| {
                 const slot = try self.slotFor(arena, call.index orelse 0);
                 const target = &self.tool_calls.items[slot];
                 if (call.id) |id| {
@@ -1969,10 +1989,10 @@ pub const chat = struct {
                 if (call.type) |kind| {
                     if (kind.len != 0) target.type = try arena.dupe(u8, kind);
                 }
-                if (call.function.name.len != 0) {
-                    target.function.name = try arena.dupe(u8, call.function.name);
+                if (call.function.name) |name| {
+                    if (name.len != 0) target.function.name = try arena.dupe(u8, name);
                 }
-                try self.tool_arguments.items[slot].appendSlice(arena, call.function.arguments);
+                try self.tool_arguments.items[slot].appendSlice(arena, call.function.arguments orelse "");
             }
             if (choice.finish_reason) |reason| self.finish_reason = try arena.dupe(u8, reason);
             if (choice.logprobs) |logprobs| {

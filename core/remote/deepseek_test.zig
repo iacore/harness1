@@ -797,7 +797,7 @@ test "the documented chat stream" {
         ,
         \\{"id":"1f63","object":"chat.completion.chunk","created":1718345013,"model":"deepseek-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"ci"}}]},"finish_reason":null}]}
         ,
-        \\{"id":"1f63","object":"chat.completion.chunk","created":1718345013,"model":"deepseek-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ty\":\"Hangzhou\"}"}}]},"finish_reason":null}]}
+        \\{"id":"1f63","object":"chat.completion.chunk","created":1718345013,"model":"deepseek-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":null,"type":"function","function":{"name":null,"arguments":"ty\":\"Hangzhou\"}"}}]},"finish_reason":null}]}
         ,
         \\{"id":"1f63","object":"chat.completion.chunk","created":1718345013,"model":"deepseek-flash","choices":[{"index":0,"delta":{"content":""},"finish_reason":"tool_calls","logprobs":{"content":[{"token":"4","logprob":-0.5,"bytes":[52],"top_logprobs":null}]}}],"usage":{"completion_tokens":9,"prompt_tokens":17,"total_tokens":26,"prompt_cache_hit_tokens":0,"prompt_cache_miss_tokens":17}}
         ,
@@ -821,7 +821,7 @@ test "the documented chat stream" {
 
     const first = (try stream.recv(a)).?;
     try testing.expectEqualStrings(chat.Object.completion_chunk, first.object);
-    try testing.expectEqualStrings(chat.Role.assistant, first.choices[0].delta.role);
+    try testing.expectEqualStrings(chat.Role.assistant, first.choices[0].delta.role.?);
     // Text the API has none of arrives as null, on both texts at once: the
     // chunk that opens a thinking-mode answer carries nothing but the role.
     try testing.expectEqual(null, first.choices[0].delta.content);
@@ -831,15 +831,19 @@ test "the documented chat stream" {
     try testing.expectEqualStrings("The answer is ", second.choices[0].delta.content.?);
     try testing.expectEqualStrings("2+2", second.choices[0].delta.reasoning_content.?);
 
-    // A tool call arrives in fragments, the first carrying its id and name.
+    // A tool call arrives in fragments, the first carrying its id and name. A
+    // later fragment repeats neither: the endpoint sends JSON null for both,
+    // and what it does not send must not be read as an empty name.
     const third = (try stream.recv(a)).?;
-    try testing.expectEqual(0, third.choices[0].delta.tool_calls[0].index.?);
-    try testing.expectEqualStrings("call_1", third.choices[0].delta.tool_calls[0].id.?);
-    try testing.expectEqualStrings("get_weather", third.choices[0].delta.tool_calls[0].function.name);
-    try testing.expectEqualStrings("{\"ci", third.choices[0].delta.tool_calls[0].function.arguments);
+    try testing.expectEqual(0, third.choices[0].delta.tool_calls.?[0].index.?);
+    try testing.expectEqualStrings("call_1", third.choices[0].delta.tool_calls.?[0].id.?);
+    try testing.expectEqualStrings("get_weather", third.choices[0].delta.tool_calls.?[0].function.name.?);
+    try testing.expectEqualStrings("{\"ci", third.choices[0].delta.tool_calls.?[0].function.arguments.?);
 
     const fourth = (try stream.recv(a)).?;
-    try testing.expectEqualStrings("ty\":\"Hangzhou\"}", fourth.choices[0].delta.tool_calls[0].function.arguments);
+    try testing.expectEqual(null, fourth.choices[0].delta.tool_calls.?[0].id);
+    try testing.expectEqual(null, fourth.choices[0].delta.tool_calls.?[0].function.name);
+    try testing.expectEqualStrings("ty\":\"Hangzhou\"}", fourth.choices[0].delta.tool_calls.?[0].function.arguments.?);
 
     const last = (try stream.recv(a)).?;
     try testing.expectEqualStrings(chat.FinishReason.tool_calls, last.choices[0].finish_reason.?);
@@ -860,6 +864,9 @@ test "the documented chat stream" {
         "{\"city\":\"Hangzhou\"}",
         collected.value.choices[0].message.tool_calls[0].function.arguments,
     );
+    // The name came on the first fragment and is not overwritten by the
+    // fragment that repeats it as null.
+    try testing.expectEqualStrings("get_weather", collected.value.choices[0].message.tool_calls[0].function.name);
     try testing.expectEqual(17, collected.value.usage.?.prompt_tokens);
     // The request goes out with `stream` set whatever the request said — it
     // was left null here — which is what makes this endpoint answer with

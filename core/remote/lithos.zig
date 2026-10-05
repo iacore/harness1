@@ -942,6 +942,24 @@ pub const chat = struct {
         arguments: []const u8 = "",
     };
 
+    /// One fragment of a tool call in a streamed delta. Only the index is
+    /// always there: the first fragment carries the id and the name, the ones
+    /// after it carry argument text, and the endpoint sends JSON null for the
+    /// parts a fragment does not repeat.
+    pub const ToolCallFragment = struct {
+        index: ?i64 = null,
+        id: ?[]const u8 = null,
+        type: ?[]const u8 = null,
+        function: FunctionCallFragment = .{},
+    };
+
+    /// The name and the argument text of one tool-call fragment, either of
+    /// which may be null.
+    pub const FunctionCallFragment = struct {
+        name: ?[]const u8 = null,
+        arguments: ?[]const u8 = null,
+    };
+
     /// How the model may choose tools.
     pub const ToolChoice = union(enum) {
         none,
@@ -1236,7 +1254,7 @@ pub const chat = struct {
         role: ?[]const u8 = null,
         content: ?[]const u8 = null,
         reasoning_content: ?[]const u8 = null,
-        tool_calls: ?[]const ToolCall = null,
+        tool_calls: ?[]const ToolCallFragment = null,
     };
 
     /// A request that asks for streaming is refused; use `sendStream`.
@@ -1342,8 +1360,12 @@ pub const chat = struct {
                 if (call.type) |kind| {
                     if (kind.len != 0) target.type = kind;
                 }
-                if (call.function.name.len != 0) target.function.name = call.function.name;
-                try self.tool_arguments.items[slot].appendSlice(arena, call.function.arguments);
+                if (call.function.name) |name| {
+                    if (name.len != 0) target.function.name = name;
+                }
+                if (call.function.arguments) |arguments| {
+                    try self.tool_arguments.items[slot].appendSlice(arena, arguments);
+                }
             }
             if (choice.finish_reason) |reason| self.finish_reason = reason;
         }
