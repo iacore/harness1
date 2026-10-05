@@ -152,6 +152,11 @@ pub fn readKey() !Key {
 
     var introducer: [1]u8 = undefined;
     if (!try readWithin(20, &introducer)) return .escape;
+    // ESC ESC is a keypress and then another key: hand the second one back.
+    if (introducer[0] == 0x1b) {
+        pushed = 0x1b;
+        return .escape;
+    }
     if (introducer[0] != '[' and introducer[0] != 'O') return .escape;
 
     var buffer: [16]u8 = undefined;
@@ -214,8 +219,17 @@ fn readWithin(timeout_ms: i32, byte: *[1]u8) !bool {
 }
 
 fn readByte(byte: *[1]u8) !bool {
+    if (pushed) |value| {
+        byte[0] = value;
+        pushed = null;
+        return true;
+    }
     return try posix.read(stdin, byte) == 1;
 }
+
+/// A byte read as part of one key and belonging to the next — a second `ESC`,
+/// which is its own keypress and the start of the sequence after it.
+var pushed: ?u8 = null;
 
 // ── Text ────────────────────────────────────────────────────────────────────
 //

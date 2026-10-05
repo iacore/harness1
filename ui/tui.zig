@@ -99,6 +99,9 @@ const Tui = struct {
     }
 
     fn handle(self: *Tui, key: kitty.Key) !bool {
+        // A message is about the key that produced it, so the next key clears
+        // it rather than leaving it to look like state.
+        self.status = "";
         return switch (self.mode) {
             .normal => self.normalKey(key),
             .insert => self.insertKey(key),
@@ -543,10 +546,15 @@ const Tui = struct {
         if (cursor_row >= self.top + height) self.top = cursor_row + 1 - height;
 
         kitty.write(kitty.erase_screen ++ kitty.cursor_home) catch {};
-        kitty.print("\x1b[7m run1 \x1b[0m {s} {s} ", .{ @tagName(self.mode), self.doc.revName() });
-        if (self.doc.readingName()) |name| kitty.print("(reading {s}) ", .{name});
-        if (self.doc.streamCount() != 0) kitty.print("{d} streaming  ", .{self.doc.streamCount()});
-        kitty.print("{s} \x1b[K", .{self.status});
+        kitty.print("\x1b[7m run1 \x1b[0m {s}  rev {s}  sel {s}", .{
+            @tagName(self.mode),
+            self.doc.revName(),
+            @tagName(self.doc.selectedKind()),
+        });
+        if (self.doc.readingName()) |name| kitty.print("  reading {s}", .{name});
+        if (self.doc.streamCount() != 0) kitty.print("  {d} streaming", .{self.doc.streamCount()});
+        if (self.status.len != 0) kitty.print("  — {s}", .{self.status});
+        kitty.write(" \x1b[K") catch {};
 
         var display: usize = 0;
         var drawn: usize = 0;
