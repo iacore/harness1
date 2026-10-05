@@ -25,6 +25,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const world = @import("run1").world;
 
 pub const Kind = enum {
     /// An editable prompt turn.
@@ -110,6 +111,17 @@ pub const Editor = struct {
     }
 
     pub fn deinit(self: *Editor) void {
+        self.clear();
+        self.nodes.deinit(self.gpa);
+        self.revs.deinit(self.gpa);
+        self.open.deinit(self.gpa);
+        self.undo_stack.deinit(self.gpa);
+        self.redo_stack.deinit(self.gpa);
+    }
+
+    /// Frees every turn and revision and leaves the lists empty: what `restore`
+    /// replaces and `deinit` keeps, so the two cannot drift.
+    fn clear(self: *Editor) void {
         for (self.nodes.items) |*node| {
             node.text.deinit(self.gpa);
             node.reasoning.deinit(self.gpa);
@@ -119,14 +131,19 @@ pub const Editor = struct {
             }
             node.tags.deinit(self.gpa);
         }
-        self.nodes.deinit(self.gpa);
+        self.nodes.clearRetainingCapacity();
         for (self.revs.items) |rev| self.gpa.free(rev.name);
-        self.revs.deinit(self.gpa);
-        self.open.deinit(self.gpa);
+        self.revs.clearRetainingCapacity();
+        self.open.clearRetainingCapacity();
         for (self.undo_stack.items) |change| self.gpa.free(change.text);
-        self.undo_stack.deinit(self.gpa);
+        self.undo_stack.clearRetainingCapacity();
         for (self.redo_stack.items) |change| self.gpa.free(change.text);
-        self.redo_stack.deinit(self.gpa);
+        self.redo_stack.clearRetainingCapacity();
+        self.current = 0;
+        self.selected = 0;
+        self.cursor = 0;
+        self.anchor = 0;
+        self.reading = null;
     }
 
     /// Tags a turn with one fact about how it was made. An empty value is not
@@ -620,6 +637,125 @@ pub const Editor = struct {
         if (std.mem.lastIndexOfScalar(u8, line_text, '\n')) |index| return line_text.len - index - 1;
         return line_text.len;
     }
+
+    // ── Sessions, in the world ────────────────────────────────────────────────
+
+    /// Puts a stored turn back exactly where it was. Unlike `add` it does not
+    /// answer the revision's head: the head comes back with the tree.
+    pub fn adopt(self: *Editor, node: Node) !Turn {
+        try self.nodes.append(self.gpa, node);
+        return self.nodes.items.len - 1;
+    }
+
+    /// Writes the tree into the world as one session on the root's `sessions`
+    /// list; `restore` is the read side of it, and `session.zig` owns the file.
+    /// `name` is what the picker shows for the session.
+    pub fn save(self: *Editor, w: *world.World, name: []const u8) !void {
+        const gpa = self.gpa;
+
+        var nodes: std.ArrayList(world.Ref) = .empty;
+        defer nodes.deinit(gpa);
+        for (self.nodes.items) |node| {
+            var tags: std.ArrayList(world.Ref) = .empty;
+            defer tags.deinit(gpa);
+            for (node.tags.items) |entry| {
+                const pair = [2]world.Field{
+                    .{ .name = try w.makeSymbol("key"), .value = try w.makeString(entry.key) },
+                    .{ .name = try w.makeSymbol("value"), .value = try w.makeString(entry.value) },
+                };
+                try tags.append(gpa, @backingInt(try w.makeStruct(&pair)));
+            }
+            const stored = [6]world.Field{
+                .{ .name = try w.makeSymbol("kind"), .value = try w.makeString(@tagName(node.kind)) },
+                .{ .name = try w.makeSymbol("text"), .value = try w.makeString(node.text.items) },
+                .{ .name = try w.makeSymbol("reasoning"), .value = try w.makeString(node.reasoning.items) },
+                // Absent and null are one thing here, so "no parent" is -1
+                // rather than a missing field.
+                .{ .name = try w.makeSymbol("parent"), .value = try w.makeInt(if (node.parent) |parent| @intCast(parent) else -1) },
+                .{ .name = try w.makeSymbol("rev"), .value = try w.makeInt(@intCast(node.rev)) },
+                .{ .name = try w.makeSymbol("tags"), .value = try w.makeList(tags.items) },
+            };
+            try nodes.append(gpa, @backingInt(try w.makeStruct(&stored)));
+        }
+
+        var revs: std.ArrayList(world.Ref) = .empty;
+        defer revs.deinit(gpa);
+        for (self.revs.items) |rev| {
+            const stored = [2]world.Field{
+                .{ .name = try w.makeSymbol("name"), .value = try w.makeString(rev.name) },
+                .{ .name = try w.makeSymbol("head"), .value = try w.makeInt(@intCast(rev.head)) },
+            };
+            try revs.append(gpa, @backingInt(try w.makeStruct(&stored)));
+        }
+
+        const session = [4]world.Field{
+            .{ .name = try w.makeSymbol("name"), .value = try w.makeString(name) },
+            .{ .name = try w.makeSymbol("current"), .value = try w.makeInt(@intCast(self.current)) },
+            .{ .name = try w.makeSymbol("revs"), .value = try w.makeList(revs.items) },
+            .{ .name = try w.makeSymbol("nodes"), .value = try w.makeList(nodes.items) },
+        };
+
+        // A session joins a new list, published with one store: no live node is
+        // ever rewritten in part (research/persistence.dj).
+        var all: std.ArrayList(world.Ref) = .empty;
+        defer all.deinit(gpa);
+        if (w.getField("sessions")) |list| {
+            if (w.items(list)) |existing| try all.appendSlice(gpa, existing);
+        }
+        try all.append(gpa, @backingInt(try w.makeStruct(&session)));
+        try w.putField("sessions", try w.makeList(all.items));
+    }
+
+    /// Becomes session `index` of the world's list. The tree is taken as it was
+    /// stored, and a prompt is opened when it does not end on one, so what is
+    /// typed next goes to a prompt rather than to a reply.
+    pub fn restore(self: *Editor, w: *world.World, index: usize) !void {
+        const gpa = self.gpa;
+        const list = w.getField("sessions") orelse return error.NoSuchSession;
+        const sessions = w.items(list) orelse return error.NoSuchSession;
+        if (index >= sessions.len) return error.NoSuchSession;
+        const session = w.asStruct(sessions[index]) orelse return error.BadSession;
+
+        const revs = try listOf(w, session, "revs");
+        const nodes = try listOf(w, session, "nodes");
+
+        self.clear();
+        for (revs) |ref| {
+            const stored = w.asStruct(ref) orelse return error.BadSession;
+            try self.revs.append(gpa, .{
+                .name = try gpa.dupe(u8, textOf(w, stored, "name") orelse ""),
+                .head = @intCast(intOf(w, stored, "head") orelse 0),
+            });
+        }
+        if (self.revs.items.len == 0) try self.revs.append(gpa, .{ .name = try gpa.dupe(u8, "main"), .head = 0 });
+        const current = intOf(w, session, "current") orelse 0;
+        self.current = @intCast(@max(@min(current, @as(i64, @intCast(self.revs.items.len - 1))), 0));
+
+        for (nodes) |ref| {
+            const stored = w.asStruct(ref) orelse return error.BadSession;
+            var node: Node = .{
+                .kind = std.meta.stringToEnum(Kind, textOf(w, stored, "kind") orelse "") orelse return error.BadSession,
+                .rev = @intCast(@max(intOf(w, stored, "rev") orelse 0, 0)),
+            };
+            const parent = intOf(w, stored, "parent") orelse -1;
+            node.parent = if (parent >= 0) @intCast(parent) else null;
+            try node.text.appendSlice(gpa, textOf(w, stored, "text") orelse "");
+            errdefer node.text.deinit(gpa);
+            try node.reasoning.appendSlice(gpa, textOf(w, stored, "reasoning") orelse "");
+            const turn = try self.adopt(node);
+            for (try listOf(w, stored, "tags")) |tag_ref| {
+                const tagged = w.asStruct(tag_ref) orelse return error.BadSession;
+                try self.tag(turn, textOf(w, tagged, "key") orelse "", textOf(w, tagged, "value") orelse "");
+            }
+        }
+
+        if (self.nodes.items.len == 0) return error.BadSession;
+        const tip = self.revs.items[self.current].head;
+        self.selected = if (tip < self.nodes.items.len) tip else self.nodes.items.len - 1;
+        self.cursor = self.text().len;
+        self.anchor = self.cursor;
+        if (self.selectedKind() != .prompt) _ = try self.newPrompt();
+    }
 };
 
 /// The byte index where the line containing `index` starts.
@@ -652,6 +788,90 @@ fn lineOf(content: []const u8, index: usize) []const u8 {
     }
     const end = std.mem.indexOfScalar(u8, content[start..], '\n') orelse content.len - start;
     return content[start .. start + end];
+}
+
+/// A stored struct's field that holds a list of refs; absent reads as empty.
+fn listOf(w: *world.World, s: world.StructRef, name: []const u8) ![]const world.Ref {
+    const field = w.get(s, name) orelse return &.{};
+    return w.items(field) orelse error.BadSession;
+}
+
+fn textOf(w: *world.World, s: world.StructRef, name: []const u8) ?[]const u8 {
+    const field = w.get(s, name) orelse return null;
+    return w.text(field);
+}
+
+fn intOf(w: *world.World, s: world.StructRef, name: []const u8) ?i64 {
+    const field = w.get(s, name) orelse return null;
+    return w.asInt(field);
+}
+
+/// A world in a fresh file under the test's tmp dir, for the session tests.
+const Scratch = struct {
+    tmp: std.testing.TmpDir,
+    path: []u8,
+    world: world.World,
+
+    fn init(capacity: usize) !Scratch {
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        var buffer: [std.fs.max_path_bytes]u8 = undefined;
+        const n = try tmp.dir.realPath(std.testing.io, &buffer);
+        const path = try std.fs.path.join(std.testing.allocator, &.{ buffer[0..n], "world.bin" });
+        errdefer std.testing.allocator.free(path);
+        return .{ .tmp = tmp, .path = path, .world = try world.World.open(std.testing.allocator, std.testing.io, path, capacity) };
+    }
+
+    fn deinit(self: *Scratch) void {
+        self.world.deinit();
+        std.testing.allocator.free(self.path);
+        self.tmp.cleanup();
+    }
+};
+
+test "a turn tree survives a session in the world" {
+    const gpa = std.testing.allocator;
+    var scratch = try Scratch.init(1 << 16);
+    defer scratch.deinit();
+
+    var editor = try Editor.init(gpa);
+    defer editor.deinit();
+    try editor.replaceText("what is a turn?");
+    _ = editor.markSent();
+    const reply = try editor.appendAssistantTurn();
+    try editor.appendReasoning(reply, "it is a node, and the model said so");
+    try editor.appendText(reply, "a turn is a node of the tree");
+    try editor.tag(reply, "model", "deepseek-ai/DeepSeek-V4.1-Flash");
+    _ = try editor.newPrompt();
+    try editor.replaceText("and a session?");
+    try editor.save(&scratch.world, "the first run");
+
+    var resumed = try Editor.init(gpa);
+    defer resumed.deinit();
+    try resumed.restore(&scratch.world, 0);
+
+    try std.testing.expectEqual(editor.nodes.items.len, resumed.nodes.items.len);
+    try std.testing.expectEqual(editor.revs.items.len, resumed.revs.items.len);
+    for (editor.nodes.items, resumed.nodes.items) |before, after| {
+        try std.testing.expectEqual(before.kind, after.kind);
+        try std.testing.expectEqualStrings(before.text.items, after.text.items);
+        try std.testing.expectEqualStrings(before.reasoning.items, after.reasoning.items);
+        try std.testing.expectEqual(before.parent, after.parent);
+        try std.testing.expectEqual(before.rev, after.rev);
+        try std.testing.expectEqual(before.tags.items.len, after.tags.items.len);
+        for (before.tags.items, after.tags.items) |wrote, read| {
+            try std.testing.expectEqualStrings(wrote.key, read.key);
+            try std.testing.expectEqualStrings(wrote.value, read.value);
+        }
+    }
+    try std.testing.expectEqualStrings(editor.revs.items[0].name, resumed.revs.items[0].name);
+    try std.testing.expectEqual(editor.selectedKind(), resumed.selectedKind());
+    try std.testing.expectEqualStrings(editor.text(), resumed.text());
+    // A second session joins the list rather than replacing it, and the store
+    // still passes its own structural scan.
+    try resumed.save(&scratch.world, "the second run");
+    try std.testing.expectEqual(@as(usize, 2), scratch.world.items(scratch.world.getField("sessions").?).?.len);
+    try scratch.world.validate();
 }
 
 test "a sent turn, its reply and the next prompt stay on the path" {
