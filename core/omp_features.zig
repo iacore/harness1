@@ -57,47 +57,48 @@ pub const record_types = [_][]const u8{
 };
 
 pub const roles = [_][]const u8{
-    "assistant",       "bashExecution",   "developer",
-    "fileMention",     "pythonExecution", "toolResult",
+    "assistant",   "bashExecution",   "developer",
+    "fileMention", "pythonExecution", "toolResult",
     "user",
 };
 
 pub const block_kinds = [_][]const u8{ "image", "text", "thinking", "video" };
 
 pub const tools = [_][]const u8{
-    "advise",                                "analyze_files",
-    "ask",                                   "ast_edit",
-    "ast_grep",                              "bash",
-    "bid",                                   "browser",
-    "cd",                                    "debug",
-    "edit",                                  "escalate",
-    "eval",                                  "find",
-    "fuzzy_find",                            "generate_image",
-    "git_file_diff",                         "git_hunk",
-    "git_overview",                          "glob",
-    "goal",                                  "grep",
-    "hub",                                   "inspect_image",
-    "irc",                                   "job",
-    "learn",                                 "ls",
-    "lsp",                                   "manage_skill",
-    "mcp__canva_commit_editing_transaction", "mcp__canva_create_design_from_candidate",
-    "mcp__canva_generate_design",            "mcp__canva_perform_editing_operations",
-    "mcp__canva_start_editing_transaction",  "mcp__canva_upload_asset_from_url",
-    "mcp__codegraph_explore",                "memory_edit",
-    "memory_forget",                         "memory_recall",
-    "memory_remember",                       "pentest_add_finding",
-    "pentest_report",                        "pentest_sandbox_run",
-    "propose_commit",                        "read",
-    "recall",                                "reflect",
-    "report_tool_issue",                     "resolve",
-    "retain",                                "search",
-    "session_search",                        "task",
-    "todo",                                  "tui",
-    "vibe_kill",                             "vibe_send",
-    "vibe_spawn",                            "vibe_wait",
-    "wait",                                  "web_search",
-    "worktree",                              "write",
-    "xd://recall",                           "yield",
+    "advise",                                  "analyze_files",
+    "ask",                                     "ast_edit",
+    "ast_grep",                                "bash",
+    "bid",                                     "browser",
+    "cd",                                      "debug",
+    "edit",                                    "escalate",
+    "eval",                                    "find",
+    "fish",                                    "fuzzy_find",
+    "generate_image",                          "git_file_diff",
+    "git_hunk",                                "git_overview",
+    "glob",                                    "goal",
+    "grep",                                    "hub",
+    "inspect_image",                           "irc",
+    "job",                                     "learn",
+    "ls",                                      "lsp",
+    "manage_skill",                            "mcp__canva_commit_editing_transaction",
+    "mcp__canva_create_design_from_candidate", "mcp__canva_generate_design",
+    "mcp__canva_perform_editing_operations",   "mcp__canva_start_editing_transaction",
+    "mcp__canva_upload_asset_from_url",        "mcp__codegraph_explore",
+    "memory_edit",                             "memory_forget",
+    "memory_recall",                           "memory_remember",
+    "pentest_add_finding",                     "pentest_report",
+    "pentest_sandbox_run",                     "propose_commit",
+    "read",                                    "recall",
+    "reflect",                                 "report_tool_issue",
+    "resolve",                                 "retain",
+    "search",                                  "session_search",
+    "task",                                    "todo",
+    "tui",                                     "vibe_kill",
+    "vibe_send",                               "vibe_spawn",
+    "vibe_wait",                               "wait",
+    "web_search",                              "worktree",
+    "write",                                   "xd://recall",
+    "yield",
 };
 
 pub const custom_types = [_][]const u8{
@@ -225,9 +226,11 @@ pub fn operationValues(tool: []const u8, key: []const u8) ?[]const []const u8 {
 /// for its kind; the tables alone only make a feature possible.
 pub const Feature = struct { kind: Kind, value: []const u8 };
 
-/// The implemented subset. Empty until an agent loop acts on a feature; add an
-/// entry at the same time the feature lands.
-pub const implemented = [_]Feature{};
+/// The implemented subset: what the agent loop acts on today. The `fish` tool
+/// is the shell this harness declares to the model and runs.
+pub const implemented = [_]Feature{
+    .{ .kind = .tool, .value = "fish" },
+};
 
 pub fn isImplemented(kind: Kind, value: []const u8) bool {
     for (implemented) |f| {
@@ -275,10 +278,10 @@ pub fn table(kind: Kind) []const []const u8 {
 /// The tools whose operations the prompt lists under `tool_operation`, in the
 /// order it lists them. `prompt.zig` reads this.
 pub const operation_tools = [_][]const u8{
-    "browser",   "edit",        "eval",      "goal",       "hub",
-    "irc",       "lsp",         "manage_skill", "memory_edit", "read",
-    "resolve",   "todo",        "vibe_kill", "vibe_send",  "vibe_spawn",
-    "vibe_wait", "wait",        "worktree",  "yield",
+    "browser",   "edit", "eval",         "goal",        "hub",
+    "irc",       "lsp",  "manage_skill", "memory_edit", "read",
+    "resolve",   "todo", "vibe_kill",    "vibe_send",   "vibe_spawn",
+    "vibe_wait", "wait", "worktree",     "yield",
 };
 
 test "the tables are the closed vocabulary" {

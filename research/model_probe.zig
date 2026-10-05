@@ -22,8 +22,9 @@ const Collected = struct {
         return .{ .context = self, .write = write };
     }
 
-    fn write(context: *anyopaque, chunk: []const u8) void {
+    fn write(context: *anyopaque, part: ipython_model.Part, chunk: []const u8) void {
         const self: *Collected = @ptrCast(@alignCast(context));
+        _ = part;
         self.text.appendSlice(std.heap.page_allocator, chunk) catch {};
     }
 };
@@ -98,19 +99,47 @@ pub fn main(init: std.process.Init) !void {
     try out.print("{d} deltas\n", .{deltas});
     try out.flush();
 
-    // The same prompt through `ui/model.zig`, which is what the TUI calls.
+    // Then through `ui/model.zig`, which is what the TUI calls: one round to get a
+    // tool call, then a second round carrying its result.
     var collected: Collected = .{};
     defer collected.text.deinit(std.heap.page_allocator);
     var reason: std.ArrayList(u8) = .empty;
     defer reason.deinit(gpa);
-    const turns = [_]ipython_model.Turn{
-        .{ .role = .user, .text = "Count from one to five, one number per line." },
-    };
-    ipython_model.reply(gpa, io, init.environ_map, debug.writer(err_out), &turns, &reason, collected.sink()) catch {
-        try out.print("ui/model failed: {s}\n", .{reason.items});
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const round_arena = arena_state.allocator();
+
+    var conversation: std.ArrayList(lithos.chat.Message) = .empty;
+    try conversation.append(round_arena, .{ .user = .{ .content = lithos.chat.text("Count the files here with the fish tool, then say the number.") } });
+
+    var calls: std.ArrayList(ipython_model.ToolCall) = .empty;
+    try ipython_model.round(gpa, io, init.environ_map, debug.writer(err_out), conversation.items, &calls, round_arena, &reason, collected.sink());
+    try out.print("round 1: {d} bytes, {d} calls\n", .{ collected.text.items.len, calls.items.len });
+    for (calls.items) |call| try out.print("  call {s} {s} {s}\n", .{ call.id, call.name, call.arguments });
+    try out.flush();
+    if (calls.items.len == 0) return;
+
+    const asked = try round_arena.alloc(lithos.chat.ToolCall, calls.items.len);
+    for (calls.items, 0..) |call, i| {
+        asked[i] = .{ .id = call.id, .function = .{ .name = call.name, .arguments = call.arguments } };
+    }
+    try conversation.append(round_arena, .{ .assistant = .{
+        .content = .{ .text = try round_arena.dupe(u8, collected.text.items) },
+        .tool_calls = asked,
+    } });
+    try conversation.append(round_arena, .{ .tool = .{
+        .tool_call_id = calls.items[0].id,
+        .content = lithos.chat.text("3"),
+    } });
+
+    collected.text.clearRetainingCapacity();
+    reason.clearRetainingCapacity();
+    ipython_model.round(gpa, io, init.environ_map, debug.writer(err_out), conversation.items, &calls, round_arena, &reason, collected.sink()) catch |err| {
+        try out.print("round 2 failed: {s} reason={s}\n", .{ @errorName(err), reason.items });
         try out.flush();
         return;
     };
-    try out.print("ui/model reply: {d} bytes\n{s}\n", .{ collected.text.items.len, collected.text.items });
+    try out.print("round 2: {d} bytes\n{s}\n", .{ collected.text.items.len, collected.text.items });
     try out.flush();
 }

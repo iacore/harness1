@@ -8,29 +8,15 @@
 //! moved over is what is selected — and what `d`, `c` and typing act on is that
 //! selection. `<esc>` leaves insert mode.
 //!
-//! Normal mode — the keys are commands:
-//!   h j k l       left, down, up, right (the arrows do the same)
-//!   w b e         word forward, back, and to the word's end
-//!   i a I A       insert before, after, at the line's start, at its end
-//!   o O           open a line below, above
-//!   d c           delete the selection, or delete it and insert
-//!   x % ;         the whole lines, the whole turn, collapse the selection
-//!   u <a-u>       undo, redo — one run of typing undoes as one
-//!   } {           select the next, previous turn: a retroactive edit's way in
-//!   C             append an assistant turn by hand — what `/continue` was
-//!   <a-b>         ask the prompt as a side question, on a revision of its own
-//!   <a-t>         read the next revision: a view, nothing is written to it
-//!   <a-m>         the tags the selected turn was generated with
-//!   : Tab         the command line          Ctrl-C  leave run1
+//! The keys are the `bindings` table below, and `:keys` draws that table as a
+//! sheet over the tree. Two of the splits it records are worth stating here:
 //!
-//! Insert mode — the keys are text:
-//!   Enter         send it: `!command` runs in fish, anything else the script's
-//!                 `add_turn`, and a fresh prompt follows
-//!   Shift-Enter   a newline, so a prompt can be several lines
-//!   Esc           back to normal mode       Tab     the command line
-//!
-//! Command mode is IPython's: Enter runs the line in the shell, Tab completes,
-//! Up and Down walk the shell's history, Ctrl-D comes back.
+//!   * `j k` move within the text, the arrows move between turns, and `} {` do
+//!     what the arrows do but select what they land on — a retroactive edit's
+//!     way in.
+//!   * `:` is this harness's own command line, and Tab is IPython's. They are
+//!     different languages, so they are different lines: a name after `:` that
+//!     is not a command is refused, and a Python line is never mistaken for one.
 //!
 //! Editing goes by grapheme, not by byte, and columns are counted in the cells
 //! kitty draws. Long lines wrap. Every terminal call is `kitty.zig`, and the
@@ -47,6 +33,10 @@ const theme = @import("theme.zig");
 const screen = @import("screen.zig");
 const model = @import("model.zig");
 const debug = run1.debug;
+const lithos = run1.lithos;
+
+/// How many times the model may call tools before the round loop gives up.
+const max_rounds = 8;
 
 pub fn run(init: std.process.Init) !void {
     var tui = try Tui.init(init.gpa, init.io, init.environ_map);
@@ -69,7 +59,94 @@ pub fn run(init: std.process.Init) !void {
     }
 }
 
-const Mode = enum { normal, insert, command };
+const Mode = enum {
+    normal,
+    insert,
+    /// The harness's command line, over `:`.
+    command,
+    /// IPython's line, over Tab.
+    shell,
+    /// The `:keys` reference, drawn in place of the tree.
+    sheet,
+};
+
+/// One command the harness's own command line takes: its name, what it does,
+/// and what runs it. The name is the harness's; anything else typed after `:`
+/// is refused, because that line is not a language.
+const Command = struct {
+    name: []const u8,
+    what: []const u8,
+    run: *const fn (*Tui) void,
+};
+
+const commands = [_]Command{
+    .{ .name = "keys", .what = "the key reference", .run = Tui.showKeys },
+};
+
+/// One line of the sheet `:keys` draws.
+const Binding = struct {
+    keys: []const u8,
+    what: []const u8,
+};
+
+/// The key reference, by mode. It is the contract the handlers below keep: a
+/// key that changes belongs here in the same change, and the sheet is this.
+const bindings = struct {
+    const normal = [_]Binding{
+        .{ .keys = "h j k l", .what = "left, down, up, right, within the text" },
+        .{ .keys = "w b e", .what = "word forward, back, and to the word's end" },
+        .{ .keys = "i a I A", .what = "insert before, after, at the line's start, at its end" },
+        .{ .keys = "o O", .what = "open a line below, above" },
+        .{ .keys = "d c", .what = "delete the selection, or delete it and insert" },
+        .{ .keys = "x % ;", .what = "the whole lines, the whole turn, collapse the selection" },
+        .{ .keys = "u <a-u>", .what = "undo, redo — one run of typing undoes as one" },
+        .{ .keys = "<a-b>", .what = "ask the prompt as a side question, on a revision of its own" },
+        .{ .keys = "<a-t>", .what = "read the next revision: a view, nothing is written to it" },
+        .{ .keys = "<a-m>", .what = "the tags the selected turn was generated with" },
+        .{ .keys = "C", .what = "append an assistant turn by hand — what `/continue` was" },
+    };
+    const turns = [_]Binding{
+        .{ .keys = "<up> <down>", .what = "the previous, next turn" },
+        .{ .keys = "} {", .what = "the same, selecting what they land on" },
+    };
+    const insert = [_]Binding{
+        .{ .keys = "<enter>", .what = "send it: `!command` runs in fish, anything else the script's `add_turn`" },
+        .{ .keys = "<shift-enter>", .what = "a newline, so a prompt can be several lines" },
+        .{ .keys = "<esc>", .what = "back to normal mode" },
+    };
+    const lines = [_]Binding{
+        .{ .keys = ":", .what = "the harness's command line" },
+        .{ .keys = "<tab>", .what = "the IPython line" },
+        .{ .keys = "<ctl-c>", .what = "leave run1" },
+    };
+    const command = [_]Binding{
+        .{ .keys = "<enter>", .what = "run the command" },
+        .{ .keys = "<esc>", .what = "back to the tree" },
+    };
+    const shell = [_]Binding{
+        .{ .keys = "<enter>", .what = "run the line in the shell" },
+        .{ .keys = "<tab>", .what = "complete the word before the cursor" },
+        .{ .keys = "<up> <down>", .what = "the shell's history" },
+        .{ .keys = "<ctl-d>", .what = "back to the tree" },
+    };
+    const sheet = [_]Binding{
+        .{ .keys = "<up> <down>", .what = "scroll" },
+        .{ .keys = "<esc> q", .what = "back to the tree" },
+    };
+};
+
+/// One section of the sheet: a mode, and its keys.
+const Section = struct { name: []const u8, rows: []const Binding };
+
+const sections = [_]Section{
+    .{ .name = "normal mode", .rows = &bindings.normal },
+    .{ .name = "turns", .rows = &bindings.turns },
+    .{ .name = "insert mode", .rows = &bindings.insert },
+    .{ .name = "lines", .rows = &bindings.lines },
+    .{ .name = "command mode", .rows = &bindings.command },
+    .{ .name = "IPython mode", .rows = &bindings.shell },
+    .{ .name = "this sheet", .rows = &bindings.sheet },
+};
 
 const Tui = struct {
     gpa: std.mem.Allocator,
@@ -81,6 +158,12 @@ const Tui = struct {
     /// The command line, kept apart from the prompt.
     command: std.ArrayList(u8) = .empty,
     command_cursor: usize = 0,
+    /// The harness's own command line, over `:` — a different line from the
+    /// shell's, because a command and a Python line are different languages.
+    line: std.ArrayList(u8) = .empty,
+    line_cursor: usize = 0,
+    /// The `:keys` sheet, drawn in place of the tree while it is open. Owned.
+    sheet: ?[]const u8 = null,
     /// The command line as it was before the history was walked, so Down can
     /// put it back.
     draft: std.ArrayList(u8) = .empty,
@@ -109,6 +192,8 @@ const Tui = struct {
         self.doc.deinit();
         self.command.deinit(self.gpa);
         self.draft.deinit(self.gpa);
+        self.line.deinit(self.gpa);
+        if (self.sheet) |text| self.gpa.free(text);
         self.frame.deinit();
     }
 
@@ -124,6 +209,8 @@ const Tui = struct {
             .normal => self.normalKey(key),
             .insert => self.insertKey(key),
             .command => self.commandKey(key),
+            .shell => self.shellKey(key),
+            .sheet => self.sheetKey(key),
         };
     }
 
@@ -134,7 +221,8 @@ const Tui = struct {
         switch (key) {
             .byte => |byte| switch (byte) {
                 3 => return true, // Ctrl-C
-                9, ':' => self.mode = .command, // Tab, and `:` for a keyboard without one
+                9 => self.mode = .shell, // Tab: IPython's line
+                ':' => self.enterCommand(), // and `:` for this harness's own
                 'h' => self.doc.stepTo(kitty.prevGrapheme(text, 0, self.doc.cursor)),
                 'l' => self.doc.stepTo(kitty.nextGrapheme(text, self.doc.cursor)),
                 'j' => self.moveLine(1),
@@ -175,14 +263,8 @@ const Tui = struct {
                 'x' => self.doc.selectLines(),
                 '%' => self.doc.selectAll(),
                 ';' => self.doc.collapse(),
-                '}' => {
-                    self.doc.selectNext();
-                    self.setStatus("{s} on {s}", .{ @tagName(self.doc.selectedKind()), self.doc.selectedRev() });
-                },
-                '{' => {
-                    self.doc.selectPrevious();
-                    self.setStatus("{s} on {s}", .{ @tagName(self.doc.selectedKind()), self.doc.selectedRev() });
-                },
+                '}' => self.focusTurn(1),
+                '{' => self.focusTurn(-1),
                 'C' => {
                     // By hand: another assistant turn, which `/continue` was,
                     // with a fresh prompt after it.
@@ -208,14 +290,27 @@ const Tui = struct {
             .escape => self.doc.collapse(),
             .left => self.doc.stepTo(kitty.prevGrapheme(text, 0, self.doc.cursor)),
             .right => self.doc.stepTo(kitty.nextGrapheme(text, self.doc.cursor)),
-            .up => self.moveLine(-1),
-            .down => self.moveLine(1),
+            .up => self.focusTurn(-1),
+            .down => self.focusTurn(1),
             .home => self.doc.stepTo(self.doc.cursorLineStart()),
             .end => self.doc.stepTo(lineEnd(text, self.doc.cursorLineStart())),
             .delete => self.doc.deleteSelection(),
             .shift_enter, .eof, .unknown => {},
         }
         return false;
+    }
+
+    /// The arrows, `}` and `{`: focus the turn after this one, or before it.
+    /// The cursor lands at that turn's end with nothing selected, so the next
+    /// motion and the next key start from it. `j` and `k` stay line motions —
+    /// the arrows move between turns, the editing keys move within the text.
+    fn focusTurn(self: *Tui, delta: isize) void {
+        if (delta < 0) {
+            self.doc.selectPrevious();
+        } else {
+            self.doc.selectNext();
+        }
+        self.setStatus("{s} on {s}", .{ @tagName(self.doc.selectedKind()), self.doc.selectedRev() });
     }
 
     /// `i`: insert at the selection's start, keeping the selection so that
@@ -250,7 +345,7 @@ const Tui = struct {
         switch (key) {
             .byte => |byte| switch (byte) {
                 3 => return true, // Ctrl-C
-                9 => self.mode = .command, // Tab
+                9 => self.mode = .shell, // Tab: IPython's line
                 '\r', '\n' => self.submit(),
                 0x7f, 0x08 => self.backspace(),
                 else => if (byte >= 0x20) self.typeByte(byte),
@@ -322,58 +417,121 @@ const Tui = struct {
 
         _ = self.doc.markSent();
 
-        // The messages are the revision's path as it stands — the turns sent
-        // and answered so far — read before the reply's own turn exists. A
-        // request ending in an empty assistant turn asks the model to continue
-        // nothing, and it answers nothing.
-        var turns: std.ArrayList(model.Turn) = .empty;
-        defer turns.deinit(self.gpa);
+        var arena_state = std.heap.ArenaAllocator.init(self.gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        // The harness's own words first: what this is, the feature vocabulary,
+        // and that an instruction may be declined rather than obeyed.
+        var harness_prompt: Io.Writer.Allocating = .init(self.gpa);
+        defer harness_prompt.deinit();
+        run1.system_prompt.systemPrompt(&harness_prompt.writer) catch {};
+
+        var messages: std.ArrayList(lithos.chat.Message) = .empty;
+        messages.append(arena, .{ .system = .{ .content = lithos.chat.text(harness_prompt.written()) } }) catch {};
+
+        // Then the revision's path: the turns sent and answered so far, read
+        // before this reply's own turn exists — a request ending in an empty
+        // assistant turn asks the model to continue nothing.
         var path: std.ArrayList(editor.Turn) = .empty;
         defer path.deinit(self.gpa);
         self.doc.path(&path) catch {};
         for (path.items) |turn| {
             const kind = self.doc.turnKind(turn);
             if (kind != .user and kind != .assistant) continue;
-            turns.append(self.gpa, .{
-                .role = if (kind == .user) .user else .assistant,
-                .text = self.doc.turnText(turn),
+            const said = self.doc.turnText(turn);
+            messages.append(arena, switch (kind) {
+                .user => .{ .user = .{ .content = lithos.chat.text(said) } },
+                else => .{ .assistant = .{ .content = .{ .text = said } } },
             }) catch {};
         }
-
-        // The reply is a turn of this revision, right after the turn it
-        // answers: it is on the path as it streams, not beside it.
-        const stream_handle = self.doc.appendAssistantTurn() catch {
-            self.status = "could not open a turn for the reply";
-            return;
-        };
-        self.streaming = stream_handle;
-        defer self.streaming = null;
 
         var reason: std.ArrayList(u8) = .empty;
         defer reason.deinit(self.gpa);
         var log: Io.Writer.Allocating = .init(self.gpa);
         defer log.deinit();
-        model.reply(self.gpa, self.io, self.environ_map, debug.writer(&log.writer), turns.items, &reason, .{
-            .context = self,
-            .write = appendChunk,
-        }) catch {
-            const why = if (reason.items.len != 0) reason.items else "the model failed";
-            self.doc.appendText(stream_handle, why) catch {};
-            self.setStatus("{s}", .{std.mem.sliceTo(why, '\n')});
-        };
+        var calls: std.ArrayList(model.ToolCall) = .empty;
 
-        // What made this turn, for `Alt-m`.
-        self.doc.tag(stream_handle, "model", model.default_model) catch {};
-        self.doc.tag(stream_handle, "thinking", @tagName(model.default_effort)) catch {};
-        self.doc.tag(stream_handle, "source", "model") catch {};
+        var round_index: usize = 0;
+        while (round_index < max_rounds) : (round_index += 1) {
+            // Each round answers into a turn of its own, so an exchange that
+            // used a tool reads in order: what it said, what the tool printed,
+            // what it said next.
+            const turn = self.doc.appendAssistantTurn() catch break;
+            self.streaming = turn;
+            calls.clearRetainingCapacity();
+
+            model.round(self.gpa, self.io, self.environ_map, debug.writer(&log.writer), messages.items, &calls, arena, &reason, .{
+                .context = self,
+                .write = appendChunk,
+            }) catch {
+                const why = if (reason.items.len != 0) reason.items else "the model failed";
+                self.doc.appendText(turn, why) catch {};
+                self.setStatus("{s}", .{std.mem.sliceTo(why, '\n')});
+                break;
+            };
+
+            // What made this turn, for `Alt-m`.
+            self.doc.tag(turn, "model", model.default_model) catch {};
+            self.doc.tag(turn, "thinking", @tagName(model.default_effort)) catch {};
+            self.doc.tag(turn, "source", "model") catch {};
+
+            if (calls.items.len == 0) break;
+
+            // The turn that asked, then one result per call.
+            const asked = arena.alloc(lithos.chat.ToolCall, calls.items.len) catch break;
+            for (calls.items, 0..) |call, i| {
+                asked[i] = .{ .id = call.id, .function = .{ .name = call.name, .arguments = call.arguments } };
+            }
+            messages.append(arena, .{ .assistant = .{
+                .content = .{ .text = self.doc.turnText(turn) },
+                .tool_calls = asked,
+            } }) catch break;
+
+            for (calls.items) |call| {
+                const result = self.runTool(arena, call) catch "the tool could not run";
+                messages.append(arena, .{ .tool = .{
+                    .tool_call_id = call.id,
+                    .content = lithos.chat.text(result),
+                } }) catch break;
+            }
+        }
+
+        self.streaming = null;
         _ = self.doc.newPrompt() catch {};
     }
 
-    /// A chunk of the reply, drawn the moment it lands.
-    fn appendChunk(context: *anyopaque, chunk: []const u8) void {
+    /// Runs one call the model made. A name outside the declared tools is
+    /// answered as such rather than guessed at.
+    fn runTool(self: *Tui, arena: std.mem.Allocator, call: model.ToolCall) ![]const u8 {
+        if (!std.mem.eql(u8, call.name, "fish")) return "no such tool";
+        const command = commandOf(self.gpa, call.arguments) orelse return "the call carried no command";
+        defer self.gpa.free(command);
+
+        const output = try ipython.fish(self.gpa, command);
+        defer self.gpa.free(output);
+
+        // What was run, and what it printed, is a turn of its own.
+        var shown: std.ArrayList(u8) = .empty;
+        defer shown.deinit(self.gpa);
+        try shown.appendSlice(self.gpa, "fish: ");
+        try shown.appendSlice(self.gpa, command);
+        try shown.appendSlice(self.gpa, "\n");
+        try shown.appendSlice(self.gpa, output);
+        _ = self.doc.add(.output, shown.items) catch {};
+
+        return arena.dupe(u8, output);
+    }
+
+    /// A chunk of the reply, drawn the moment it lands. The chain of thought goes
+    /// to the turn's reasoning, the answer to its text.
+    fn appendChunk(context: *anyopaque, part: model.Part, chunk: []const u8) void {
         const self: *Tui = @ptrCast(@alignCast(context));
         const turn = self.streaming orelse return;
-        self.doc.appendText(turn, chunk) catch return;
+        switch (part) {
+            .reasoning => self.doc.appendReasoning(turn, chunk) catch return,
+            .content => self.doc.appendText(turn, chunk) catch return,
+        }
         self.render();
     }
 
@@ -459,17 +617,124 @@ const Tui = struct {
         self.status = self.status_buffer[0..length];
     }
 
-    // ── Command mode, as IPython's ──────────────────────────────────────────
+    // ── Command mode, as Kakoune's ──────────────────────────────────────────
+
+    /// `:`: this harness's own command line, which starts empty. The shell's
+    /// line is Tab's, and the two are kept apart.
+    fn enterCommand(self: *Tui) void {
+        self.line.clearRetainingCapacity();
+        self.line_cursor = 0;
+        self.mode = .command;
+    }
 
     fn commandKey(self: *Tui, key: kitty.Key) bool {
         switch (key) {
             .byte => |byte| switch (byte) {
                 3 => return true, // Ctrl-C
                 4 => self.mode = .normal, // Ctrl-D, back to the tree
-                9 => self.complete(),
                 '\r', '\n' => return self.runCommand(),
                 0x7f, 0x08 => self.commandBackspace(),
                 else => if (byte >= 0x20) self.commandInsert(byte),
+            },
+            .left => if (self.line_cursor > 0) {
+                self.line_cursor -= 1;
+            },
+            .right => if (self.line_cursor < self.line.items.len) {
+                self.line_cursor += 1;
+            },
+            .home => self.line_cursor = 0,
+            .end => self.line_cursor = self.line.items.len,
+            .delete => if (self.line_cursor < self.line.items.len) {
+                _ = self.line.orderedRemove(self.line_cursor);
+            },
+            .escape => self.mode = .normal,
+            .up, .down, .alt, .shift_enter, .eof, .unknown => {},
+        }
+        return false;
+    }
+
+    /// Runs what was typed after `:`. A name in `commands` runs; anything else
+    /// is refused rather than guessed at.
+    fn runCommand(self: *Tui) bool {
+        const word = std.mem.trim(u8, self.line.items, " \t");
+        defer {
+            self.line.clearRetainingCapacity();
+            self.line_cursor = 0;
+        }
+        self.mode = .normal;
+        if (word.len == 0) return false;
+        for (commands) |command| {
+            if (std.mem.eql(u8, word, command.name)) {
+                command.run(self);
+                return false;
+            }
+        }
+        self.setStatus("no such command: {s}", .{word});
+        return false;
+    }
+
+    fn commandInsert(self: *Tui, byte: u8) void {
+        self.line.insert(self.gpa, self.line_cursor, byte) catch return;
+        self.line_cursor += 1;
+    }
+
+    fn commandBackspace(self: *Tui) void {
+        if (self.line_cursor == 0) return;
+        _ = self.line.orderedRemove(self.line_cursor - 1);
+        self.line_cursor -= 1;
+    }
+
+    // ── The sheet ───────────────────────────────────────────────────────────
+
+    /// `:keys`: the key reference, drawn in place of the tree. A view, in the
+    /// sense `<a-t>` reads one: nothing is written, and no turn is made of it.
+    fn showKeys(self: *Tui) void {
+        const text = sheetText(self.gpa) catch {
+            self.setStatus("could not build the sheet", .{});
+            return;
+        };
+        if (self.sheet) |old| self.gpa.free(old);
+        self.sheet = text;
+        self.top = 0;
+        self.mode = .sheet;
+        self.setStatus("the key reference", .{});
+    }
+
+    fn closeSheet(self: *Tui) void {
+        if (self.sheet) |text| self.gpa.free(text);
+        self.sheet = null;
+        self.mode = .normal;
+    }
+
+    fn sheetKey(self: *Tui, key: kitty.Key) bool {
+        switch (key) {
+            .byte => |byte| switch (byte) {
+                3 => return true, // Ctrl-C
+                'j' => self.top += 1,
+                'k' => self.top -|= 1,
+                'q', 0x1b => self.closeSheet(),
+                else => {},
+            },
+            .down => self.top += 1,
+            .up => self.top -|= 1,
+            .home => self.top = 0,
+            .escape => self.closeSheet(),
+            else => {},
+        }
+        return false;
+    }
+
+    // ── Command mode, as IPython's ──────────────────────────────────────────
+
+    fn shellKey(self: *Tui, key: kitty.Key) bool {
+        switch (key) {
+            .byte => |byte| switch (byte) {
+                3 => return true, // Ctrl-C
+                4 => self.mode = .normal, // Ctrl-D, back to the tree
+                9 => self.shellComplete(),
+                '\r', '\n' => return self.runShellLine(),
+                0x7f, 0x08 => self.shellBackspace(),
+                else => if (byte >= 0x20) self.shellInsert(byte),
             },
             .left => if (self.command_cursor > 0) {
                 self.command_cursor -= 1;
@@ -477,8 +742,8 @@ const Tui = struct {
             .right => if (self.command_cursor < self.command.items.len) {
                 self.command_cursor += 1;
             },
-            .up => self.history(1),
-            .down => self.history(-1),
+            .up => self.shellHistory(1),
+            .down => self.shellHistory(-1),
             .home => self.command_cursor = 0,
             .end => self.command_cursor = self.command.items.len,
             .delete => if (self.command_cursor < self.command.items.len) {
@@ -490,7 +755,7 @@ const Tui = struct {
         return false;
     }
 
-    fn runCommand(self: *Tui) bool {
+    fn runShellLine(self: *Tui) bool {
         const line = std.mem.trim(u8, self.command.items, " \t");
         defer {
             self.command.clearRetainingCapacity();
@@ -514,7 +779,7 @@ const Tui = struct {
 
     /// Completes the word before the cursor from the shell, and lists what it
     /// found on the status row.
-    fn complete(self: *Tui) void {
+    fn shellComplete(self: *Tui) void {
         const line = self.command.items;
         const output = ipython.complete(self.gpa, line, self.command_cursor) catch return;
         defer self.gpa.free(output);
@@ -543,11 +808,11 @@ const Tui = struct {
 
     /// Walks the shell's history: up goes back, down comes forward, and coming
     /// back to the start restores the line that was being typed.
-    fn history(self: *Tui, delta: isize) void {
+    fn shellHistory(self: *Tui, delta: isize) void {
         const next = @as(isize, @intCast(self.history_offset)) + delta;
         if (next < 0) return;
         if (next == 0) {
-            if (self.history_offset != 0) self.setCommand(self.draft.items);
+            if (self.history_offset != 0) self.setShellLine(self.draft.items);
             self.history_offset = 0;
             return;
         }
@@ -558,22 +823,22 @@ const Tui = struct {
         const entry = ipython.history(self.gpa, @intCast(next)) catch return;
         defer self.gpa.free(entry);
         if (entry.len == 0) return;
-        self.setCommand(entry);
+        self.setShellLine(entry);
         self.history_offset = @intCast(next);
     }
 
-    fn setCommand(self: *Tui, text: []const u8) void {
+    fn setShellLine(self: *Tui, text: []const u8) void {
         self.command.clearRetainingCapacity();
         self.command.appendSlice(self.gpa, text) catch {};
         self.command_cursor = self.command.items.len;
     }
 
-    fn commandInsert(self: *Tui, byte: u8) void {
+    fn shellInsert(self: *Tui, byte: u8) void {
         self.command.insert(self.gpa, self.command_cursor, byte) catch return;
         self.command_cursor += 1;
     }
 
-    fn commandBackspace(self: *Tui) void {
+    fn shellBackspace(self: *Tui) void {
         if (self.command_cursor == 0) return;
         _ = self.command.orderedRemove(self.command_cursor - 1);
         self.command_cursor -= 1;
@@ -598,15 +863,28 @@ const Tui = struct {
         defer freeRows(self.gpa, &transcript);
         var cursor_row: usize = 0;
         var cursor_col: usize = 0;
-        self.turnRows(&transcript, width, &cursor_row, &cursor_col) catch {};
+        if (self.sheet) |text| {
+            self.sheetRows(&transcript, text, width) catch {};
+        } else {
+            self.turnRows(&transcript, width, &cursor_row, &cursor_col) catch {};
+        }
 
-        // Keep the cursor in view.
-        if (cursor_row < self.top) self.top = cursor_row;
-        if (cursor_row >= self.top + height) self.top = cursor_row + 1 - height;
+        // Keep the cursor in view, or — on the sheet, which has no cursor —
+        // keep the scroll inside it.
+        if (self.sheet == null) {
+            if (cursor_row < self.top) self.top = cursor_row;
+            if (cursor_row >= self.top + height) self.top = cursor_row + 1 - height;
+        }
         if (transcript.items.len >= height and self.top + height > transcript.items.len) {
             self.top = transcript.items.len - height;
         }
         if (self.top > transcript.items.len) self.top = transcript.items.len;
+        // The sheet is scrolled rather than kept in view, and its scroll stops
+        // where the text does.
+        if (self.sheet != null) {
+            const limit = if (transcript.items.len > height) transcript.items.len - height else 0;
+            if (self.top > limit) self.top = limit;
+        }
 
         self.frame.clear();
         self.statusRow(width) catch {};
@@ -617,13 +895,30 @@ const Tui = struct {
             self.frame.add(transcript.items[index]) catch {};
         }
 
-        if (self.mode == .command) {
-            self.commandRow(width) catch {};
-            self.frame.place(self.rows - 1, @min(self.command_cursor + 2, width - 1));
-        } else {
-            self.frame.place(1 + (cursor_row - self.top), @min(cursor_col, width - 1));
+        switch (self.mode) {
+            .command => {
+                self.lineRow(width, ": ", self.line.items) catch {};
+                self.frame.place(self.rows - 1, @min(self.line_cursor + 2, width - 1));
+            },
+            .shell => {
+                self.lineRow(width, ">>> ", self.command.items) catch {};
+                self.frame.place(self.rows - 1, @min(self.command_cursor + 4, width - 1));
+            },
+            else => self.frame.place(1 + (cursor_row - self.top), @min(cursor_col, width - 1)),
         }
         self.frame.flush();
+    }
+
+    /// The sheet's rows: its lines, wrapped to the width, with no gutter and no
+    /// cursor — nothing in it is edited.
+    fn sheetRows(self: *Tui, out: *std.ArrayList([]u8), text: []const u8, width: usize) !void {
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |line| {
+            var wrapped: std.ArrayList([]u8) = .empty;
+            defer freeRows(self.gpa, &wrapped);
+            try row.wrap(self.gpa, line, width, &wrapped);
+            for (wrapped.items) |part| try out.append(self.gpa, try self.gpa.dupe(u8, part));
+        }
     }
 
     /// The bar: the mode, the revision, the turn being edited, and whatever the
@@ -661,12 +956,12 @@ const Tui = struct {
         try self.frame.add(painted);
     }
 
-    /// The command line, on the last row.
-    fn commandRow(self: *Tui, width: usize) !void {
+    /// A line being typed, on the last row: its prefix, then the text.
+    fn lineRow(self: *Tui, width: usize, prefix: []const u8, line: []const u8) !void {
         var text: std.ArrayList(u8) = .empty;
         defer text.deinit(self.gpa);
-        try text.appendSlice(self.gpa, ": ");
-        try text.appendSlice(self.gpa, self.command.items);
+        try text.appendSlice(self.gpa, prefix);
+        try text.appendSlice(self.gpa, line);
         const kept = try row.truncate(self.gpa, text.items, width);
         defer self.gpa.free(kept);
         try self.frame.add(kept);
@@ -685,38 +980,60 @@ const Tui = struct {
 
         for (turns.items) |turn| {
             const raw = self.doc.turnText(turn);
-            const styled = if (turn == self.doc.selected)
-                try theme.highlight(self.gpa, raw, range.start, range.end)
-            else
-                try self.gpa.dupe(u8, raw);
-            defer self.gpa.free(styled);
-
+            const reasoning = self.doc.turnReasoning(turn);
+            const is_selected = turn == self.doc.selected;
             const mark = gutterFor(self.doc.turnKind(turn));
-            const position = if (turn == self.doc.selected) wrappedPosition(raw, self.doc.cursor, inner) else null;
 
-            // A turn's text is lines first, then wrapped within each line: a
-            // newline is a break the turn asked for, not a cell to draw.
-            var lines = std.mem.splitScalar(u8, styled, '\n');
-            var line_index: usize = 0;
-            while (lines.next()) |line| {
-                const line_start = out.items.len;
-                var wrapped: std.ArrayList([]u8) = .empty;
-                defer freeRows(self.gpa, &wrapped);
-                try row.wrap(self.gpa, line, inner, &wrapped);
+            // The chain of thought is drawn dim, above the answer it came
+            // before; the answer is highlighted when this is the turn being
+            // edited. The mark goes on the first row only, continuation rows
+            // are indented to match.
+            var first_row = true;
+            var content_start: ?usize = null;
+            for ([_]bool{ true, false }) |is_reasoning| {
+                const content = if (is_reasoning) reasoning else raw;
+                if (content.len == 0) continue;
+                const styled = if (is_reasoning)
+                    try theme.paint(self.gpa, theme.dim, content)
+                else if (is_selected)
+                    try theme.highlight(self.gpa, content, range.start, range.end)
+                else
+                    try self.gpa.dupe(u8, content);
+                defer self.gpa.free(styled);
+                if (!is_reasoning) content_start = out.items.len;
 
-                for (wrapped.items, 0..) |text, i| {
-                    const prefix = if (line_index == 0 and i == 0) mark else "  ";
-                    const entry = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ prefix, text });
-                    errdefer self.gpa.free(entry);
-                    try out.append(self.gpa, entry);
-                }
-                if (position) |p| {
-                    if (line_index == p.line) {
-                        cursor_row.* = line_start + p.row;
-                        cursor_col.* = gutter + p.col;
+                var lines = std.mem.splitScalar(u8, styled, '\n');
+                while (lines.next()) |line| {
+                    var wrapped: std.ArrayList([]u8) = .empty;
+                    defer freeRows(self.gpa, &wrapped);
+                    try row.wrap(self.gpa, line, inner, &wrapped);
+                    for (wrapped.items, 0..) |text, i| {
+                        const prefix = if (first_row and i == 0) mark else "  ";
+                        const entry = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ prefix, text });
+                        errdefer self.gpa.free(entry);
+                        try out.append(self.gpa, entry);
                     }
+                    first_row = false;
                 }
-                line_index += 1;
+            }
+
+            // A turn with nothing in it yet — the reply that has not started —
+            // still gets a row, so the cursor has somewhere to be.
+            if (first_row) {
+                const entry = try std.fmt.allocPrint(self.gpa, "{s}", .{mark});
+                errdefer self.gpa.free(entry);
+                try out.append(self.gpa, entry);
+            }
+
+            if (is_selected) {
+                const position = wrappedPosition(raw, self.doc.cursor, inner);
+                if (content_start) |start| {
+                    cursor_row.* = start + position.row;
+                    cursor_col.* = @min(gutter + position.col, if (width > 0) width - 1 else 0);
+                } else {
+                    cursor_row.* = out.items.len - 1;
+                    cursor_col.* = gutter;
+                }
             }
         }
     }
@@ -759,10 +1076,68 @@ fn wrappedPosition(text: []const u8, index: usize, width: usize) struct { line: 
     return .{ .line = line, .row = at_row, .col = cells };
 }
 
-/// Frees the rows of a list this file built.
+/// The `:keys` sheet: every section with its keys padded into a column, then
+/// the commands. Built from the tables above rather than written out again, so
+/// a binding that changes is a binding that reads right here.
+fn sheetText(gpa: std.mem.Allocator) ![]u8 {
+    var text: std.ArrayList(u8) = .empty;
+    errdefer text.deinit(gpa);
+
+    for (sections, 0..) |section, index| {
+        if (index != 0) try text.append(gpa, '\n');
+        try text.appendSlice(gpa, section.name);
+        try text.append(gpa, '\n');
+        const column = keysColumn(section.rows);
+        for (section.rows) |binding| {
+            try text.appendSlice(gpa, binding.keys);
+            try text.appendNTimes(gpa, ' ', column - row.visibleWidth(binding.keys) + 2);
+            try text.appendSlice(gpa, binding.what);
+            try text.append(gpa, '\n');
+        }
+    }
+
+    try text.append(gpa, '\n');
+    try text.appendSlice(gpa, "commands\n");
+    var column: usize = 0;
+    for (commands) |command| column = @max(column, row.visibleWidth(command.name));
+    for (commands) |command| {
+        try text.appendSlice(gpa, command.name);
+        try text.appendNTimes(gpa, ' ', column - row.visibleWidth(command.name) + 2);
+        try text.appendSlice(gpa, command.what);
+        try text.append(gpa, '\n');
+    }
+    return text.toOwnedSlice(gpa);
+}
+
+/// The widest key string of a column, in cells.
+fn keysColumn(rows: []const Binding) usize {
+    var column: usize = 0;
+    for (rows) |binding| column = @max(column, row.visibleWidth(binding.keys));
+    return column;
+}
+
+/// Frees the rows of a list this file built, and the list. `deinit` takes the
+/// list by value, which would leave the caller's copy pointing at freed memory;
+/// `clearAndFree` is the one that goes through the pointer.
 fn freeRows(gpa: std.mem.Allocator, rows: *std.ArrayList([]u8)) void {
     for (rows.items) |text| gpa.free(text);
-    rows.clearRetainingCapacity();
+    rows.clearAndFree(gpa);
+}
+
+/// The `command` argument of a tool call, read out of the JSON it was given.
+fn commandOf(gpa: std.mem.Allocator, arguments: []const u8) ?[]u8 {
+    const parsed = std.json.parseFromSlice(std.json.Value, gpa, arguments, .{}) catch return null;
+    defer parsed.deinit();
+    const object = switch (parsed.value) {
+        .object => |object| object,
+        else => return null,
+    };
+    const command = object.get("command") orelse return null;
+    const text = switch (command) {
+        .string => |string| string,
+        else => return null,
+    };
+    return gpa.dupe(u8, text) catch null;
 }
 
 /// Whether a byte is part of a word, for the word motions.
