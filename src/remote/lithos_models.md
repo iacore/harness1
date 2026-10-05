@@ -202,6 +202,51 @@ The client models five, not the endpoint's seven. It gained
 modelled separately — the section below measures it as `system` under another
 name — and `function` is left out because no model tested serves it.
 
+## Image, audio and video input (**live**)
+
+The reference types `content` as `[string, array, 'null']` and gives no part
+schema, so no media shape is documented; there is no upload endpoint either —
+`GET` and multipart `POST /v1/files` both answer 404 (2026-10-05). Media travels
+only as content parts. Measured the same day by
+`zig build --build-file ./build.research.zig lithos_media`
+(`research/lithos/lithos_media_probe.zig`) on `deepseek-ai/DeepSeek-V4.1-Flash`
+and `moonshotai/Kimi-K3`.
+
+Images land on both models, by reference and inline:
+
+- `image_url` with an http(s) URL answers with the picture's content — `Dog` for
+  a puppy photo — so the loader fetches and the model reads it.
+- `image_url` with a `data:image/png;base64,...` URL answers `ZEBRA 42` for a
+  generated image. This inline form is the only "upload" the API has.
+- A `detail` field on `image_url` is accepted and does not change the answer.
+- The image reaches the prompt: `prompt_tokens` is 209 with the image part
+  against 14 for the question alone on DeepSeek.
+- A URL the loader cannot decode as an image is a 400 — DeepSeek
+  `An exception occurred while loading IMAGE data ...: Could not d...`, Kimi
+  `Could not decode image: cannot identify image file ...`.
+
+Audio and video are recognized part types, gated per model, and served by
+neither:
+
+- Kimi-K3 refuses all of them before the engine — 400
+  `Kimi-K3 supports image input only` for `video_url`, `input_audio` and
+  `audio_url` alike.
+- DeepSeek-V4.1-Flash accepts all of them (200) and delivers none, and the
+  model reports the part as missing: for `video_url` that the video "isn't
+  accessible", for `input_audio` (a base64 WAV) that "the audio didn't come
+  through". `prompt_tokens` is 20 with a `video_url` part and 19 with
+  `audio_url` against 14 for the same text alone, where an image part adds
+  about 195. An unreachable `video_url` and an unreachable `audio_url` are also
+  200 — the same token count as a reachable one — so the URL is not fetched
+  either. The part reaches the model only as an "unsupported" placeholder.
+- Pointing `image_url` at an MP4 fails in the image loader (400), as above.
+- `input_video` (the Responses-API spelling), `file` with a `file_url`, and
+  `file` with a `file_id` are not part types: each 400s at the role validate
+  union, naming `role` rather than the part.
+
+`chat.Part` models `text` and `image_url`, which covers everything that works.
+No audio or video part is typed, and none would be served if it were.
+
 ## `system` versus `developer` (**live**)
 
 `zig build --build-file ./build.research.zig lithos_sysdev`

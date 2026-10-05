@@ -103,6 +103,19 @@ pub fn build(b: *std.Build) void {
     });
     _ = addRunStep(b, lithos_probe_exe, &credentials.step, "lithos_probe", "Probe the per-model constraints of the LithosAI roster");
 
+    const lithos_media_exe = b.addExecutable(.{
+        .name = "lithos_media_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/lithos/lithos_media_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "run1", .module = mod },
+            },
+        }),
+    });
+    _ = addRunStep(b, lithos_media_exe, &credentials.step, "lithos_media", "Probe how LithosAI carries image and video input");
+
     const lithos_strict_exe = b.addExecutable(.{
         .name = "lithos_strict_probe",
         .root_module = b.createModule(.{
