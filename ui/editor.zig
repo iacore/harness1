@@ -80,12 +80,22 @@ pub const Editor = struct {
     /// selected, and a motion moves the cursor while the anchor stays, so the
     /// moved-over text is what is selected.
     anchor: usize = 0,
-    /// The revision being read, when one is. Reading is a view: the revision
-    /// that was forked off receives nothing, and what is typed still goes to
-    /// `current`.
+    /// Reading a revision, when one is. Reading is a view: the revision that was
+    /// forked off receives nothing, and what is typed still goes to `current`.
     reading: ?usize = null,
     /// Streams still open.
     open: std.ArrayList(Stream) = .empty,
+    /// What the turns said before the changes, newest last.
+    undo_stack: std.ArrayList(Change) = .empty,
+    redo_stack: std.ArrayList(Change) = .empty,
+
+    /// One turn's text, as it was at a point in time.
+    const Change = struct {
+        turn: Turn,
+        text: []u8,
+        cursor: usize,
+        anchor: usize,
+    };
 
     pub fn init(gpa: Allocator) !Editor {
         var editor: Editor = .{ .gpa = gpa };
@@ -108,6 +118,10 @@ pub const Editor = struct {
         for (self.revs.items) |rev| self.gpa.free(rev.name);
         self.revs.deinit(self.gpa);
         self.open.deinit(self.gpa);
+        for (self.undo_stack.items) |change| self.gpa.free(change.text);
+        self.undo_stack.deinit(self.gpa);
+        for (self.redo_stack.items) |change| self.gpa.free(change.text);
+        self.redo_stack.deinit(self.gpa);
     }
 
     /// Tags a turn with one fact about how it was made. An empty value is not
@@ -125,6 +139,64 @@ pub const Editor = struct {
     pub fn tagsOf(self: *Editor, turn: Turn) []const Tag {
         if (turn >= self.nodes.items.len) return &.{};
         return self.nodes.items[turn].tags.items;
+    }
+
+    // ── Undo ────────────────────────────────────────────────────────────────
+
+    /// Notes what the edited turn says now, before a change is made to it. A
+    /// caller records once per action — entering insert mode, or a delete — so
+    /// a run of typing undoes as one, the way Kakoune groups it.
+    pub fn record(self: *Editor) void {
+        const node = &self.nodes.items[self.selected];
+        const copy = self.gpa.dupe(u8, node.text.items) catch return;
+        self.undo_stack.append(self.gpa, .{
+            .turn = self.selected,
+            .text = copy,
+            .cursor = self.cursor,
+            .anchor = self.anchor,
+        }) catch {
+            self.gpa.free(copy);
+            return;
+        };
+        for (self.redo_stack.items) |change| self.gpa.free(change.text);
+        self.redo_stack.clearRetainingCapacity();
+    }
+
+    pub fn undo(self: *Editor) bool {
+        const change = self.undo_stack.pop() orelse return false;
+        self.swap(change, &self.redo_stack);
+        return true;
+    }
+
+    pub fn redo(self: *Editor) bool {
+        const change = self.redo_stack.pop() orelse return false;
+        self.swap(change, &self.undo_stack);
+        return true;
+    }
+
+    /// Puts `change`'s text back, and remembers what is there now on `keep`.
+    fn swap(self: *Editor, change: Change, keep: *std.ArrayList(Change)) void {
+        const node = &self.nodes.items[change.turn];
+        const current = self.gpa.dupe(u8, node.text.items) catch {
+            self.gpa.free(change.text);
+            return;
+        };
+        keep.append(self.gpa, .{
+            .turn = change.turn,
+            .text = current,
+            .cursor = self.cursor,
+            .anchor = self.anchor,
+        }) catch {
+            self.gpa.free(current);
+            self.gpa.free(change.text);
+            return;
+        };
+        node.text.clearRetainingCapacity();
+        node.text.appendSlice(self.gpa, change.text) catch {};
+        self.gpa.free(change.text);
+        self.selected = change.turn;
+        self.cursor = @min(change.cursor, node.text.items.len);
+        self.anchor = @min(change.anchor, node.text.items.len);
     }
 
     // ── Revisions ───────────────────────────────────────────────────────────
@@ -524,6 +596,27 @@ fn lineOf(content: []const u8, index: usize) []const u8 {
     }
     const end = std.mem.indexOfScalar(u8, content[start..], '\n') orelse content.len - start;
     return content[start .. start + end];
+}
+
+test "undo puts a turn's text back, and a new change drops the redo" {
+    var editor = try Editor.init(std.testing.allocator);
+    defer editor.deinit();
+
+    editor.record();
+    try editor.replaceText("typed");
+    try std.testing.expectEqualStrings("typed", editor.text());
+
+    try std.testing.expect(editor.undo());
+    try std.testing.expectEqualStrings("", editor.text());
+    try std.testing.expect(editor.redo());
+    try std.testing.expectEqualStrings("typed", editor.text());
+
+    // A fresh change after an undo clears what could have been redone.
+    try std.testing.expect(editor.undo());
+    editor.record();
+    try editor.replaceText("other");
+    try std.testing.expect(!editor.redo());
+    try std.testing.expectEqualStrings("other", editor.text());
 }
 
 test "revs stream together, a merge keeps the rev name, an edit is retroactive" {

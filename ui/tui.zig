@@ -15,6 +15,8 @@
 //!   o O           open a line below, above
 //!   d c           delete the selection, or delete it and insert
 //!   x % ;         the whole lines, the whole turn, collapse the selection
+//!   u <a-u>       undo, redo — one run of typing undoes as one
+//!   } {           select the next, previous turn: a retroactive edit's way in
 //!   C             append an assistant turn by hand — what `/continue` was
 //!   <a-b>         ask the prompt as a side question, on a revision of its own
 //!   <a-t>         read the next revision: a view, nothing is written to it
@@ -124,17 +126,30 @@ const Tui = struct {
                 'I' => self.insertAt(self.doc.cursorLineStart()),
                 'A' => self.insertAt(lineEnd(text, self.doc.cursorLineStart())),
                 'o' => {
+                    self.doc.record();
                     self.doc.openBelow();
                     self.mode = .insert;
                 },
                 'O' => {
+                    self.doc.record();
                     self.doc.openAbove();
                     self.mode = .insert;
                 },
-                'd' => self.doc.deleteSelection(),
+                'd' => {
+                    self.doc.record();
+                    self.doc.deleteSelection();
+                },
                 'c' => {
+                    self.doc.record();
                     self.doc.deleteSelection();
                     self.mode = .insert;
+                },
+                'u' => {
+                    if (self.doc.undo()) {
+                        self.setStatus("undone", .{});
+                    } else {
+                        self.setStatus("nothing to undo", .{});
+                    }
                 },
                 'x' => self.doc.selectLines(),
                 '%' => self.doc.selectAll(),
@@ -160,6 +175,13 @@ const Tui = struct {
                 'b' => self.askSide(),
                 't' => self.readNext(),
                 'm' => self.showTags(),
+                'u' => {
+                    if (self.doc.redo()) {
+                        self.setStatus("redone", .{});
+                    } else {
+                        self.setStatus("nothing to redo", .{});
+                    }
+                },
                 else => {},
             },
             .escape => self.doc.collapse(),
@@ -178,6 +200,7 @@ const Tui = struct {
     /// `i`: insert at the selection's start, keeping the selection so that
     /// typing replaces it.
     fn insertBefore(self: *Tui) void {
+        self.doc.record();
         const range = self.doc.selection();
         self.doc.moveCursor(range.start);
         self.doc.anchor = range.end;
@@ -186,6 +209,7 @@ const Tui = struct {
 
     /// `a`: the same, past the selection's end.
     fn insertAfter(self: *Tui) void {
+        self.doc.record();
         const range = self.doc.selection();
         self.doc.moveCursor(range.end);
         self.doc.anchor = range.start;
@@ -193,6 +217,7 @@ const Tui = struct {
     }
 
     fn insertAt(self: *Tui, index: usize) void {
+        self.doc.record();
         self.doc.moveCursor(index);
         self.mode = .insert;
     }
