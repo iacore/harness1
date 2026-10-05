@@ -142,6 +142,72 @@ pub fn build(b: *std.Build) void {
     });
     _ = addRunStep(b, lithos_sysdev_exe, &credentials.step, "lithos_sysdev", "Probe how DeepSeek-on-LithosAI treats system versus developer turns");
 
+    // Ties the harness's transport to the system libcurl for the first time:
+    // if this does not negotiate h2, nothing in `src/` will. Zig 0.17 has no
+    // `@cImport`, so the header reaches Zig through translate-c.
+    const curl_translate = b.addTranslateC(.{
+        .root_source_file = b.path("research/curl_shim.c"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    // `/usr/local/include` precedes `/usr/include` in the default search path,
+    // and a stale curl 7.79.1 header tree lives there; the system tree wins
+    // only if it is named first.
+    curl_translate.addSystemIncludePath(.{ .cwd_relative = "/usr/include" });
+    curl_translate.linkSystemLibrary("curl", .{});
+
+    const libcurl_probe_exe = b.addExecutable(.{
+        .name = "libcurl_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/libcurl_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "curl", .module = curl_translate.createModule() },
+            },
+        }),
+    });
+    libcurl_probe_exe.root_module.linkSystemLibrary("curl", .{});
+    const libcurl_step = b.step("libcurl_probe", "Prove libcurl links from Zig and negotiates HTTP/2");
+    const run_libcurl = b.addRunArtifact(libcurl_probe_exe);
+    run_libcurl.addPassthruArgs();
+    run_libcurl.setCwd(b.path("."));
+    libcurl_step.dependOn(&run_libcurl.step);
+
+    // Times `std.http.Client`'s HTTP/1.1 under concurrency, for comparison with
+    // curl's h1 on the same endpoint.
+    const zig_h1_bench_exe = b.addExecutable(.{
+        .name = "zig_h1_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/zig_h1_bench.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const curl_smoke_exe = b.addExecutable(.{
+        .name = "curl_smoke",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/curl_smoke.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness1", .module = mod },
+            },
+        }),
+    });
+    const curl_smoke_step = b.step("curl_smoke", "Smoke-test the libcurl transport");
+    const run_curl_smoke = b.addRunArtifact(curl_smoke_exe);
+    run_curl_smoke.setCwd(b.path("."));
+    curl_smoke_step.dependOn(&run_curl_smoke.step);
+
+    const zig_h1_step = b.step("zig_h1_bench", "Time N concurrent HTTP/1.1 requests from std.http.Client");
+    const run_zig_h1 = b.addRunArtifact(zig_h1_bench_exe);
+    run_zig_h1.addPassthruArgs();
+    run_zig_h1.setCwd(b.path("."));
+    zig_h1_step.dependOn(&run_zig_h1.step);
+
     // Attributes every part of every omp session transcript to a named
     // feature. Reads only the local session store, so it needs neither a key
     // nor a network.

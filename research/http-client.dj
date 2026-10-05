@@ -1,0 +1,93 @@
+# HTTP client behaviour against the LithosAI endpoint
+
+Transport cost and whether HTTP/2 pays, measured 2026-10-05 on this machine
+against `https://api.lithosai.cloud/v1/models`. That endpoint answers an
+unauthenticated `401` with a tiny body, so a reading here is the transport and
+not the model; server-side prefill is in `research/lithos/latency.dj`, and the
+vendor's own protocol support is in `research/lithos/lithos.dj`.
+
+## Method
+
+Every request is `--resolve`d to a real address (`3.220.29.237`), because this
+machine's DNS maps every host into `198.18.0.0/15` — a transparent proxy whose
+TCP connect returns in ~0.3 ms, far too fast to be a US round trip. The proxy
+still sits in the path, so absolute times are not portable; the comparisons are.
+
+Instruments: curl 8.22.0, `research/libcurl_probe.zig` for libcurl,
+`research/zig_h1_bench.zig` for `std.http.Client`.
+
+## A connection costs ~0.58 s, and only reuse removes it
+
+| | TCP | TLS | TTFB |
+| --- | --- | --- | --- |
+| fresh connection | 0.3–0.5 ms | 0.51–0.60 s | 0.87–0.90 s |
+| reused connection | — | — | 0.21–0.31 s |
+
+`nconn=0` on the reused rows: no handshake. The TLS handshake is the whole
+client-side cost, and reusing the connection reclaims ~0.58 s of it. One fresh
+reading hit 1.59 s for TLS; the rest stayed in band.
+
+Reuse is the endpoint's own `keep-alive`, so it is available to any client that
+keeps the connection — `std.http.Client`'s pool included. HTTP/2 versus HTTP/1.1
+does not enter into it for a single request: fresh, both are ~0.87–0.90 s.
+
+## Concurrency: h2 multiplexes, h1.1 opens N connections
+
+Wall time for N requests issued together, three trials each.
+
+| N | client | connections | wall (s) |
+| --- | --- | --- | --- |
+| 10 | curl h1.1 | 10 | 0.76 / 0.83 / 2.14 |
+| 10 | curl h2 | 1 | 0.92 / 0.81 / 0.90 |
+| 10 | `std.http` h1 | 10 | 0.78 / 0.85 / 1.19 |
+| 20 | curl h1.1 | 20 | 1.23 / 2.48 / 0.87 |
+| 20 | curl h2 | 1 | 0.89 / 0.90 / 0.89 |
+| 20 | `std.http` h1 | 20 | 0.89 / 1.71 / 1.09 |
+
+- h2 carries all N streams on **one** connection; h1.1 needs one per in-flight
+  request, so N TLS handshakes.
+- At N=10 h1.1 and h2 are the same cost, because the N handshakes run in
+  parallel and all finish about when one does. At N=20 h1.1 goes erratic
+  (0.87–2.48 s) while h2 stays flat (0.89–0.90 s).
+- curl h1.1 and `std.http.Client` h1 are the same transport, cost for cost.
+- Measured on short requests. For long SSE streams h2 puts every stream on one
+  TCP connection, so a stalled connection stalls all of them — the opposite of
+  N independent h1.1 sockets. `[INFERENCE]` not measured here.
+
+## "Force h2" is the client's job, not libcurl's
+
+libcurl does not enforce the version. `research/libcurl_probe.zig` with
+`CURL_HTTP_VERSION_2TLS` against `https://ftp.gnu.org/` (ALPN `http/1.1` only):
+
+```
+h2: status=403 negotiated=HTTP/1.1
+abort: h2 was required and not negotiated
+```
+
+The request **succeeded over HTTP/1.1**; libcurl fell back without a word. So a
+client that must run h2 has to read `CURLINFO_HTTP_VERSION` after the response
+starts and abort on anything but `CURL_HTTP_VERSION_2_0`. Against the endpoint
+that matters it does negotiate h2 — `api.lithosai.cloud`, `h2` required:
+
+```
+h2: status=401 negotiated=HTTP/2
+```
+
+## curl options that do not help
+
+Against a fresh connection to the endpoint, none of these moved the handshake
+out of its 0.57–0.60 s band, and none helped the reused path:
+
+| option | effect |
+| --- | --- |
+| `--tcp-fastopen` | none |
+| `--no-tcp-nodelay` | none |
+| DNS caching | none — name lookup is ~0.02 ms through the proxy |
+| picking another address | none — all three A records handshake in 0.57–0.60 s |
+| `--http2` vs `--http1.1` on one request | none |
+
+TLS session resumption was not established: `openssl -sess_out` wrote no session
+file (TLS 1.3 tickets arrive after the handshake, and the test closed first), so
+it is untested rather than ruled out.
+
+The only lever is the connection itself.
