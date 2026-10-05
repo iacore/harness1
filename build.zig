@@ -19,17 +19,23 @@ pub fn build(b: *std.Build) void {
     // program, so the exe exists only in a checkout that has it.
     if (b.root.access(b.graph.io, "ui/main.zig", .{})) |_| {
         b.dependOnDirectoryContents(b.path("ui"));
-        const exe = b.addExecutable(.{
-            .name = "run1",
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("ui/main.zig"),
-                .target = target,
-                .optimize = optimize,
-                .imports = &.{
-                    .{ .name = "run1", .module = mod },
-                },
-            }),
+        // The UI embeds CPython for its IPython command, so it links libc and
+        // libpython and compiles the shim. `python3-config` is asked for both
+        // the include path and the libraries, so no Python version is written
+        // into this file.
+        const ui = b.createModule(.{
+            .root_source_file = b.path("ui/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "run1", .module = mod },
+            },
         });
+        ui.addCSourceFile(.{ .file = b.path("ui/python_shim.c"), .flags = &.{"-std=c99"} });
+        for (pythonFlags(b, &.{ "--embed", "--includes" }, "-I")) |path| ui.addIncludePath(.{ .cwd_relative = path });
+        for (pythonFlags(b, &.{ "--embed", "--ldflags" }, "-l")) |name| ui.linkSystemLibrary(name, .{});
+        const exe = b.addExecutable(.{ .name = "run1", .root_module = ui });
         b.installArtifact(exe);
 
         const run_step = b.step("run", "Run the app");
@@ -118,6 +124,25 @@ fn addPathsOnlyTest(b: *std.Build) *std.Build.Step.Run {
     // The scratch directory is outside the cache, so the step cannot be cached.
     run.has_side_effects = true;
     return run;
+}
+
+/// The tokens `python3-config` prints with `prefix` stripped, so the embedded
+/// interpreter is discovered rather than pinned to a version in this file.
+fn pythonFlags(b: *std.Build, args: []const []const u8, prefix: []const u8) []const []const u8 {
+    const allocator = b.allocator;
+    var argv: std.ArrayList([]const u8) = .empty;
+    argv.append(allocator, "python3-config") catch @panic("OOM");
+    for (args) |arg| argv.append(allocator, arg) catch @panic("OOM");
+    const text = b.run(argv.items);
+
+    var flags: std.ArrayList([]const u8) = .empty;
+    var tokens = std.mem.tokenizeAny(u8, text, " \n");
+    while (tokens.next()) |token| {
+        if (std.mem.startsWith(u8, token, prefix)) {
+            flags.append(allocator, token[prefix.len..]) catch @panic("OOM");
+        }
+    }
+    return flags.toOwnedSlice(allocator) catch @panic("OOM");
 }
 
 /// The `.paths` list, read from `build.zig.zon` so that the test above cannot

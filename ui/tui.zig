@@ -8,6 +8,7 @@
 //!   q, quit, exit leave             (a command)
 //!   prompt, system load the harness system prompt into the prompt buffer
 //!   clear         empty the prompt buffer
+//!   ipython, python open an embedded IPython session; run1 exits when it ends
 //!
 //! Editing goes by grapheme, not by byte: Backspace and Delete remove a whole
 //! cluster, the arrows step one, Home and End go to the line's ends, and
@@ -19,6 +20,7 @@ const std = @import("std");
 const Io = std.Io;
 const run1 = @import("run1");
 const kitty = @import("kitty.zig");
+const python = @import("python.zig");
 
 pub fn run(init: std.process.Init) !void {
     var editor: Editor = .{ .gpa = init.gpa };
@@ -27,19 +29,43 @@ pub fn run(init: std.process.Init) !void {
     if (init.environ_map.get("LINES")) |value| editor.rows = std.fmt.parseInt(usize, value, 10) catch 24;
 
     // No terminal to draw on: the caller falls back to the CLI.
-    const raw = kitty.startRaw() catch return error.NotATerminal;
-    defer raw.deinit();
-
-    kitty.write(kitty.enter_alternate_screen) catch {};
-    defer kitty.write(kitty.leave_alternate_screen ++ kitty.show_cursor) catch {};
+    var terminal = Terminal.open() catch return error.NotATerminal;
+    defer terminal.close();
 
     editor.render();
     while (true) {
         const key = kitty.readKey() catch break;
         if (try editor.handle(key)) break;
+        if (editor.embed_requested) {
+            editor.embed_requested = false;
+            // IPython needs the terminal back, and it ends the program: a
+            // normal return from `embed` — Ctrl-D, or `exit()` — is run1's own
+            // normal exit. Only a session that could not start comes back.
+            terminal.close();
+            if (python.embed() == 0) return;
+            terminal = try Terminal.open();
+            editor.status = "IPython did not run";
+        }
         editor.render();
     }
 }
+
+/// Raw mode and the alternate screen, held together so they leave together
+/// when an IPython session borrows the terminal.
+const Terminal = struct {
+    raw: kitty.RawMode,
+
+    fn open() !Terminal {
+        const raw = try kitty.startRaw();
+        kitty.write(kitty.enter_alternate_screen) catch {};
+        return .{ .raw = raw };
+    }
+
+    fn close(self: Terminal) void {
+        kitty.write(kitty.leave_alternate_screen ++ kitty.show_cursor) catch {};
+        self.raw.deinit();
+    }
+};
 
 const Editor = struct {
     gpa: std.mem.Allocator,
@@ -51,6 +77,9 @@ const Editor = struct {
     command: std.ArrayList(u8) = .empty,
     mode: Mode = .prompt,
     status: []const u8 = "",
+    /// Set by the `ipython` command, read by the loop, which hands the
+    /// terminal to the embedded session.
+    embed_requested: bool = false,
     cols: usize = 80,
     rows: usize = 24,
     /// The display row drawn on the editor's first row.
@@ -116,6 +145,8 @@ const Editor = struct {
             self.loadSystemPrompt() catch {
                 self.status = "could not load the system prompt";
             };
+        } else if (eq(command, "ipython") or eq(command, "python") or eq(command, "py")) {
+            self.embed_requested = true;
         } else if (eq(command, "clear")) {
             self.buffer.clearRetainingCapacity();
             self.cursor = 0;
