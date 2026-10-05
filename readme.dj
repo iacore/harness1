@@ -17,3 +17,7 @@ handmade. it's too complicated to express my thoughts to agents than to code it 
 
 prompt assembly should be dynamic.
 
+we bust the prefix cache rather than let a running prompt see stale data. a hit is an
+optimisation; a turn that no longer says what it said is a lie. the miss is
+deliberate, and it is bounded by where the edit is — see `research/prompt-cache.dj`.
+

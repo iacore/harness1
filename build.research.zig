@@ -202,6 +202,19 @@ pub fn build(b: *std.Build) void {
     run_curl_smoke.setCwd(b.path("."));
     curl_smoke_step.dependOn(&run_curl_smoke.step);
 
+    const cache_probe_exe = b.addExecutable(.{
+        .name = "cache_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/cache_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "harness1", .module = mod },
+            },
+        }),
+    });
+    _ = addRunStep(b, cache_probe_exe, &credentials.step, "cache_probe", "Measure whether prompt caching needs a fixed prefix");
+
     const zig_h1_step = b.step("zig_h1_bench", "Time N concurrent HTTP/1.1 requests from std.http.Client");
     const run_zig_h1 = b.addRunArtifact(zig_h1_bench_exe);
     run_zig_h1.addPassthruArgs();
