@@ -179,6 +179,17 @@ fn parseSequence(sequence: []const u8) Key {
             var parts = std.mem.splitScalar(u8, body, ';');
             const code = std.fmt.parseInt(u32, parts.next() orelse return .unknown, 10) catch return .unknown;
             const modifier = std.fmt.parseInt(u32, parts.next() orelse "1", 10) catch 1;
+            // Ctrl and a key arrive as their control character, which is what
+            // the rest of the editor already handles — Ctrl-C and Ctrl-D above
+            // all, so a keyboard using this protocol can still leave.
+            if (modifier >= 2 and (modifier - 1) & 4 != 0) {
+                if (code >= 'a' and code <= 'z') return .{ .byte = @intCast(code - 'a' + 1) };
+                if (code >= 'A' and code <= 'Z') return .{ .byte = @intCast(code - 'A' + 1) };
+                if (code == '[') return .escape;
+                if (code == ' ') return .{ .byte = 0 };
+                return .unknown;
+            }
+            if (code == 27) return .escape;
             if (code == 13) return if (modifier >= 2) .shift_enter else .{ .byte = '\r' };
             if (code == 9) return .{ .byte = 9 };
             return .unknown;
