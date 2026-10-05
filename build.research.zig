@@ -155,6 +155,19 @@ pub fn build(b: *std.Build) void {
     });
     _ = addRunStep(b, lithos_sysdev_exe, &credentials.step, "lithos_sysdev", "Probe how DeepSeek-on-LithosAI treats system versus developer turns");
 
+    const turns_probe_exe = b.addExecutable(.{
+        .name = "turns_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/turns_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "run1", .module = mod },
+            },
+        }),
+    });
+    _ = addRunStep(b, turns_probe_exe, &credentials.step, "turns_probe", "Compare one system turn against one per instruction section");
+
     // Ties the harness's transport to the system libcurl for the first time:
     // if this does not negotiate h2, nothing in `src/` will. Zig 0.17 has no
     // `@cImport`, so the header reaches Zig through translate-c.
