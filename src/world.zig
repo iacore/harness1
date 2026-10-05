@@ -23,8 +23,14 @@
 //! There is therefore no journal and no undo log. The remaining assumption is
 //! that a store to an aligned word lands entirely or not at all — what the
 //! hardware this targets does; write ordering across a power loss is not
-//! addressed. The image's own header makes a reopen decode what this build
-//! knows and refuse a version it does not.
+//! addressed.
+//!
+//! Every allocation is framed with its size, so the region is a sequence of
+//! blocks running from the header to `used`. `open` walks that sequence end to
+//! end — validating the whole file, not only the part the graph reaches — and
+//! then walks the graph; a fault at either step fails the open rather than
+//! serving a half-read image. The image's header makes a reopen decode what
+//! this build knows and refuse a version it does not.
 //!
 //! Bugs are excluded by three means, not by testing alone: a `@"struct"` and a
 //! `symbol` have their own handle types (`StructRef`, `SymbolRef`), so an
@@ -164,12 +170,14 @@ const Loam = struct {
     }
 
     fn alloc(self: *Loam, n: usize) Fault!Ref {
-        const aligned = (n + 7) & ~@as(usize, 7);
+        const data = (n + 7) & ~@as(usize, 7);
+        const block = data + @sizeOf(u64); // the size word frames every allocation
         const off = self.used();
-        const need = off + aligned;
-        if (need > self.words.len * @sizeOf(u64)) return error.OutOfSpace;
-        self.setUsed(need);
-        return @intCast(off);
+        const end = std.math.add(usize, off, block) catch return error.OutOfSpace;
+        if (end > self.words.len * @sizeOf(u64)) return error.OutOfSpace;
+        self.words[off / @sizeOf(u64)] = block;
+        self.setUsed(end);
+        return @intCast(off + @sizeOf(u64));
     }
 
     fn putBytes(self: *Loam, data: []const u8) Fault!Ref {
@@ -253,6 +261,7 @@ pub const World = struct {
         if (self.loam.words[word_magic] != magic or self.loam.words[word_version] != version) {
             return error.BadImage;
         }
+        try self.scan();
         try self.validate();
     }
 
@@ -270,9 +279,10 @@ pub const World = struct {
     /// cannot tell a node start from the middle of another node's payload; that
     /// is what `validate` is for.
     pub fn alive(self: *World, r: Ref) bool {
-        if (r == none or r < header_bytes) return false;
+        if (r == none or r < header_bytes + @sizeOf(u64)) return false;
         if (r % @sizeOf(u64) != 0) return false;
-        return r + @sizeOf(Node) <= self.loam.used();
+        const end = std.math.add(u64, r, @sizeOf(Node)) catch return false;
+        return end <= self.loam.used();
     }
 
     fn tagAt(self: *World, r: Ref) Fault!Tag {
@@ -424,7 +434,7 @@ pub const World = struct {
     fn bytesOf(self: *World, r: Ref) ?[]const u8 {
         if (!self.alive(r)) return null;
         const n = self.loam.node(r).*;
-        const end = @as(usize, @intCast(n.a)) + @as(usize, @intCast(n.b));
+        const end = std.math.add(u64, n.a, n.b) catch return null;
         if (end > self.loam.used()) return null;
         return self.loam.bytes(@intCast(n.a), @intCast(n.b));
     }
@@ -543,6 +553,24 @@ pub const World = struct {
 
     // ── the executable invariant ────────────────────────────────────────────
 
+    /// Walk every block the allocator wrote, from the header to `used`, and
+    /// report the first that is not well formed: a size word that is zero,
+    /// unaligned, or runs past `used`. The blocks tile the region exactly, so
+    /// this validates the whole file, not only the part the graph reaches.
+    fn scan(self: *World) Fault!void {
+        const used = self.loam.used();
+        const total = self.loam.words.len * @sizeOf(u64);
+        if (used > total or used < header_bytes or used % @sizeOf(u64) != 0) return error.BadSpan;
+        var pos: usize = header_bytes;
+        while (pos < used) {
+            const size = self.loam.words[pos / @sizeOf(u64)];
+            if (size == 0 or size % @sizeOf(u64) != 0) return error.BadSpan;
+            const next = std.math.add(usize, pos, size) catch return error.BadSpan;
+            if (next > used) return error.BadSpan;
+            pos = next;
+        }
+    }
+
     /// Walk everything reachable from the root and report the first structural
     /// fault: a dangling handle, an unreadable tag, a payload past the region,
     /// a member whose name is not a symbol, or a graph too deep to walk.
@@ -568,11 +596,11 @@ pub const World = struct {
             .decimal => if (!self.alive(@intCast(n.b))) return error.BadHandle,
             .timestamp => try self.span(n.a, @sizeOf(Timestamp)),
             .list, .sexp => {
-                try self.span(n.a, n.b * @sizeOf(Ref));
+                try self.elems(n.a, n.b, @sizeOf(Ref));
                 for (self.itemsOf(n)) |c| try self.walk(c, seen, depth + 1);
             },
             .@"struct" => {
-                try self.span(n.a, n.b * @sizeOf(Field));
+                try self.elems(n.a, n.b, @sizeOf(Field));
                 for (self.fieldsOf(n)) |f| {
                     try self.walk(@intFromEnum(f.name), seen, depth + 1);
                     const name_tag = self.tagOf(@intFromEnum(f.name)) orelse return error.BadFieldName;
@@ -585,8 +613,15 @@ pub const World = struct {
 
     fn span(self: *World, off: u64, len: u64) Fault!void {
         if (off == 0 and len == 0) return;
-        const end = @as(usize, @intCast(off)) + @as(usize, @intCast(len));
+        const end = std.math.add(u64, off, len) catch return error.BadSpan;
         if (end > self.loam.used()) return error.BadSpan;
+    }
+
+    /// A span of `count` elements `width` bytes each, the product made without
+    /// overflowing on a corrupt count.
+    fn elems(self: *World, off: u64, count: u64, comptime width: usize) Fault!void {
+        const len = std.math.mul(u64, count, width) catch return error.BadSpan;
+        return self.span(off, len);
     }
 };
 
@@ -937,4 +972,23 @@ test "a file that is not this image is refused, not read" {
     @memset(&junk, 0xde);
     try std.Io.Dir.cwd().writeFile(test_io, .{ .sub_path = path, .data = &junk });
     try testing.expectError(error.BadImage, World.open(testing.allocator, test_io, path, 0));
+}
+
+test "a block that runs past the region is rejected at open" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(test_io, &buf);
+    const path = try std.fs.path.join(testing.allocator, &.{ buf[0..n], "world.bin" });
+    defer testing.allocator.free(path);
+
+    var img: [64]u8 = undefined;
+    @memset(&img, 0);
+    const words = std.mem.bytesAsSlice(u64, img[0..]);
+    words[word_magic] = magic;
+    words[word_version] = version;
+    words[word_used] = 1 << 40; // says the image is far larger than the file
+    words[word_root] = none;
+    try std.Io.Dir.cwd().writeFile(test_io, .{ .sub_path = path, .data = &img });
+    try testing.expectError(error.BadSpan, World.open(testing.allocator, test_io, path, 0));
 }
