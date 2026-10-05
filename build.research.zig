@@ -181,6 +181,20 @@ pub fn build(b: *std.Build) void {
     });
     _ = addRunStep(b, kitty_probe_exe, &credentials.step, "kitty_probe", "Clear the kitty scrollback and print text in one transaction");
 
+    const model_probe_exe = b.addExecutable(.{
+        .name = "model_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/model_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "run1", .module = mod },
+                .{ .name = "model", .module = modelModule(b, target, optimize) },
+            },
+        }),
+    });
+    _ = addRunStep(b, model_probe_exe, &credentials.step, "model_probe", "Print every delta of a streamed LithosAI reply");
+
     // Ties the harness's transport to the system libcurl for the first time:
     // if this does not negotiate h2, nothing in `core/` will. Zig 0.17 has no
     // `@cImport`, so the header reaches Zig through translate-c.
@@ -314,6 +328,25 @@ fn addRunStep(
     run.step.dependOn(credentials);
     step.dependOn(&run.step);
     return run;
+}
+
+/// The UI's model layer as a module, so a research program probes the very code
+/// the TUI calls.
+fn modelModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("ui/model.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "run1", .module = harnessModuleOf(b) },
+        },
+    });
+}
+
+/// The harness module, built from `build.zig`, so this file does not duplicate
+/// its libc and libcurl wiring.
+fn harnessModuleOf(b: *std.Build) *std.Build.Module {
+    return b.modules.get("run1").?;
 }
 
 /// The UI's terminal layer as a module, so a research program probes it without

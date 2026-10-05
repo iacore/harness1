@@ -45,9 +45,11 @@ const editor = @import("editor.zig");
 const row = @import("row.zig");
 const theme = @import("theme.zig");
 const screen = @import("screen.zig");
+const model = @import("model.zig");
+const debug = run1.debug;
 
 pub fn run(init: std.process.Init) !void {
-    var tui = try Tui.init(init.gpa);
+    var tui = try Tui.init(init.gpa, init.io, init.environ_map);
     defer tui.deinit();
     if (init.environ_map.get("COLUMNS")) |value| tui.cols = std.fmt.parseInt(usize, value, 10) catch 80;
     if (init.environ_map.get("LINES")) |value| tui.rows = std.fmt.parseInt(usize, value, 10) catch 24;
@@ -62,7 +64,7 @@ pub fn run(init: std.process.Init) !void {
     tui.render();
     while (true) {
         const key = kitty.readKey() catch break;
-        if (try tui.handle(key)) break;
+        if (try tui.pressKey(key)) break;
         tui.render();
     }
 }
@@ -71,7 +73,11 @@ const Mode = enum { normal, insert, command };
 
 const Tui = struct {
     gpa: std.mem.Allocator,
+    io: Io,
+    environ_map: *const std.process.Environ.Map,
     doc: editor.Editor,
+    /// Here so the status row can say a reply is streaming in.
+    streaming: ?editor.Stream = null,
     /// The command line, kept apart from the prompt.
     command: std.ArrayList(u8) = .empty,
     command_cursor: usize = 0,
@@ -89,8 +95,14 @@ const Tui = struct {
     /// The frame being built, and the one last painted.
     frame: screen.Screen,
 
-    fn init(gpa: std.mem.Allocator) !Tui {
-        return .{ .gpa = gpa, .doc = try editor.Editor.init(gpa), .frame = screen.Screen.init(gpa) };
+    fn init(gpa: std.mem.Allocator, io: Io, environ_map: *const std.process.Environ.Map) !Tui {
+        return .{
+            .gpa = gpa,
+            .io = io,
+            .environ_map = environ_map,
+            .doc = try editor.Editor.init(gpa),
+            .frame = screen.Screen.init(gpa),
+        };
     }
 
     fn deinit(self: *Tui) void {
@@ -104,7 +116,7 @@ const Tui = struct {
         self.status = std.fmt.bufPrint(&self.status_buffer, format, args) catch self.status_buffer[0..0];
     }
 
-    fn handle(self: *Tui, key: kitty.Key) !bool {
+    fn pressKey(self: *Tui, key: kitty.Key) !bool {
         // A message is about the key that produced it, so the next key clears
         // it rather than leaving it to look like state.
         self.status = "";
@@ -288,40 +300,81 @@ const Tui = struct {
         self.status = "";
         const sent = self.gpa.dupe(u8, text) catch return;
         defer self.gpa.free(sent);
-        const bang = std.mem.startsWith(u8, sent, "!");
-
-        const output = (if (bang)
-            ipython.fish(self.gpa, std.mem.trimStart(u8, sent[1..], " \t"))
-        else
-            ipython.addTurn(self.gpa, sent)) catch {
-            self.status = "the scripting layer failed";
+        if (std.mem.startsWith(u8, sent, "!")) {
+            const command = std.mem.trimStart(u8, sent[1..], " \t");
+            const output = ipython.fish(self.gpa, command) catch {
+                self.status = "the scripting layer failed";
+                return;
+            };
+            defer self.gpa.free(output);
+            _ = self.doc.markSent();
+            const turn = self.doc.appendAssistantTurn() catch return;
+            self.doc.appendText(turn, output) catch {};
+            self.doc.tag(turn, "source", "fish") catch {};
+            _ = self.doc.newPrompt() catch {};
             return;
-        };
-        defer self.gpa.free(output);
+        }
+
+        // The script records the turn; the reply comes from the model.
+        if (ipython.addTurn(self.gpa, sent)) |recorded| {
+            self.gpa.free(recorded);
+        } else |_| {}
 
         _ = self.doc.markSent();
-        if (self.stream(output)) |stream_handle| {
-            // What made this turn, as far as this side knows. The model id and
-            // the effort come from whoever runs the model; the script is what
-            // answered here.
-            self.doc.tag(stream_handle, "source", if (bang) "fish" else "add_turn") catch {};
-            self.doc.merge(stream_handle) catch {};
+
+        // The messages are the revision's path as it stands — the turns sent
+        // and answered so far — read before the reply's own turn exists. A
+        // request ending in an empty assistant turn asks the model to continue
+        // nothing, and it answers nothing.
+        var turns: std.ArrayList(model.Turn) = .empty;
+        defer turns.deinit(self.gpa);
+        var path: std.ArrayList(editor.Turn) = .empty;
+        defer path.deinit(self.gpa);
+        self.doc.path(&path) catch {};
+        for (path.items) |turn| {
+            const kind = self.doc.turnKind(turn);
+            if (kind != .user and kind != .assistant) continue;
+            turns.append(self.gpa, .{
+                .role = if (kind == .user) .user else .assistant,
+                .text = self.doc.turnText(turn),
+            }) catch {};
         }
+
+        // The reply is a turn of this revision, right after the turn it
+        // answers: it is on the path as it streams, not beside it.
+        const stream_handle = self.doc.appendAssistantTurn() catch {
+            self.status = "could not open a turn for the reply";
+            return;
+        };
+        self.streaming = stream_handle;
+        defer self.streaming = null;
+
+        var reason: std.ArrayList(u8) = .empty;
+        defer reason.deinit(self.gpa);
+        var log: Io.Writer.Allocating = .init(self.gpa);
+        defer log.deinit();
+        model.reply(self.gpa, self.io, self.environ_map, debug.writer(&log.writer), turns.items, &reason, .{
+            .context = self,
+            .write = appendChunk,
+        }) catch {
+            const why = if (reason.items.len != 0) reason.items else "the model failed";
+            self.doc.appendText(stream_handle, why) catch {};
+            self.setStatus("{s}", .{std.mem.sliceTo(why, '\n')});
+        };
+
+        // What made this turn, for `Alt-m`.
+        self.doc.tag(stream_handle, "model", model.default_model) catch {};
+        self.doc.tag(stream_handle, "thinking", @tagName(model.default_effort)) catch {};
+        self.doc.tag(stream_handle, "source", "model") catch {};
         _ = self.doc.newPrompt() catch {};
     }
 
-    /// Streams a reply in line by line, the way a model's answer arrives, and
-    /// returns its handle. The caller decides whether it joins the revision.
-    fn stream(self: *Tui, output: []const u8) ?editor.Stream {
-        if (output.len == 0) return null;
-        const stream_handle = self.doc.beginAssistant() catch return null;
-        var lines = std.mem.splitScalar(u8, output, '\n');
-        while (lines.next()) |piece| {
-            if (piece.len == 0 and lines.rest().len == 0) break; // the trailing newline
-            self.doc.appendAssistant(stream_handle, piece) catch break;
-            self.doc.appendAssistant(stream_handle, "\n") catch break;
-        }
-        return stream_handle;
+    /// A chunk of the reply, drawn the moment it lands.
+    fn appendChunk(context: *anyopaque, chunk: []const u8) void {
+        const self: *Tui = @ptrCast(@alignCast(context));
+        const turn = self.streaming orelse return;
+        self.doc.appendText(turn, chunk) catch return;
+        self.render();
     }
 
     fn backspace(self: *Tui) void {
@@ -588,9 +641,8 @@ const Tui = struct {
             try text.appendSlice(self.gpa, "  reading ");
             try text.appendSlice(self.gpa, name);
         }
-        if (self.doc.streamCount() != 0) {
-            var count: [32]u8 = undefined;
-            try text.appendSlice(self.gpa, try std.fmt.bufPrint(&count, "  {d} streaming", .{self.doc.streamCount()}));
+        if (self.streaming != null or self.doc.streamCount() != 0) {
+            try text.appendSlice(self.gpa, "  streaming");
         }
         if (self.status.len != 0) {
             try text.appendSlice(self.gpa, "  — ");
@@ -639,22 +691,32 @@ const Tui = struct {
                 try self.gpa.dupe(u8, raw);
             defer self.gpa.free(styled);
 
-            var wrapped: std.ArrayList([]u8) = .empty;
-            defer freeRows(self.gpa, &wrapped);
-            try row.wrap(self.gpa, styled, inner, &wrapped);
+            const mark = gutterFor(self.doc.turnKind(turn));
+            const position = if (turn == self.doc.selected) wrappedPosition(raw, self.doc.cursor, inner) else null;
 
-            const first = gutterFor(self.doc.turnKind(turn));
-            for (wrapped.items, 0..) |text, i| {
-                const line = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ if (i == 0) first else "  ", text });
-                errdefer self.gpa.free(line);
-                try out.append(self.gpa, line);
-            }
-            if (turn == self.doc.selected and wrapped.items.len != 0) {
-                const position = wrappedPosition(raw, self.doc.cursor, inner);
-                if (position.row < wrapped.items.len) {
-                    cursor_row.* = out.items.len - (wrapped.items.len - position.row);
-                    cursor_col.* = gutter + position.col;
+            // A turn's text is lines first, then wrapped within each line: a
+            // newline is a break the turn asked for, not a cell to draw.
+            var lines = std.mem.splitScalar(u8, styled, '\n');
+            var line_index: usize = 0;
+            while (lines.next()) |line| {
+                const line_start = out.items.len;
+                var wrapped: std.ArrayList([]u8) = .empty;
+                defer freeRows(self.gpa, &wrapped);
+                try row.wrap(self.gpa, line, inner, &wrapped);
+
+                for (wrapped.items, 0..) |text, i| {
+                    const prefix = if (line_index == 0 and i == 0) mark else "  ";
+                    const entry = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ prefix, text });
+                    errdefer self.gpa.free(entry);
+                    try out.append(self.gpa, entry);
                 }
+                if (position) |p| {
+                    if (line_index == p.line) {
+                        cursor_row.* = line_start + p.row;
+                        cursor_col.* = gutter + p.col;
+                    }
+                }
+                line_index += 1;
             }
         }
     }
@@ -672,12 +734,20 @@ fn gutterFor(kind: editor.Kind) []const u8 {
 
 /// Where the cursor sits once `text` is wrapped: which row of it, and which
 /// cell in that row.
-fn wrappedPosition(text: []const u8, index: usize, width: usize) struct { row: usize, col: usize } {
+fn wrappedPosition(text: []const u8, index: usize, width: usize) struct { line: usize, row: usize, col: usize } {
     var at: usize = 0;
+    var line: usize = 0;
     var at_row: usize = 0;
     var cells: usize = 0;
     const limit = @min(index, text.len);
     while (at < limit) {
+        if (text[at] == '\n') {
+            line += 1;
+            at_row = 0;
+            cells = 0;
+            at += 1;
+            continue;
+        }
         const here = kitty.clusterWidth(text, at);
         if (cells != 0 and cells + here > width) {
             at_row += 1;
@@ -686,7 +756,7 @@ fn wrappedPosition(text: []const u8, index: usize, width: usize) struct { row: u
         cells += here;
         at = kitty.nextGrapheme(text, at);
     }
-    return .{ .row = at_row, .col = cells };
+    return .{ .line = line, .row = at_row, .col = cells };
 }
 
 /// Frees the rows of a list this file built.

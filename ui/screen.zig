@@ -59,6 +59,8 @@ pub const Screen = struct {
     pub fn flush(self: *Screen) void {
         if (self.damaged) {
             kitty.write(kitty.erase_screen ++ kitty.cursor_home) catch {};
+            // Nothing is on the screen now, so every row paints.
+            freeRows(self.gpa, &self.shown);
             self.damaged = false;
         }
         const limit = @min(self.rows.items.len, self.height);

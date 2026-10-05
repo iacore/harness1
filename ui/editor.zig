@@ -287,6 +287,18 @@ pub const Editor = struct {
         }
     }
 
+    /// Appends to a turn's text — what a reply streaming in does. When that turn
+    /// is the one the editor is on, the cursor follows the text so the view
+    /// stays where the writing is.
+    pub fn appendText(self: *Editor, turn: Turn, content: []const u8) !void {
+        if (turn >= self.nodes.items.len) return;
+        try self.nodes.items[turn].text.appendSlice(self.gpa, content);
+        if (turn == self.selected) {
+            self.cursor = self.nodes.items[turn].text.items.len;
+            self.anchor = self.cursor;
+        }
+    }
+
     pub fn isStreaming(self: *Editor, stream: Stream) bool {
         for (self.open.items) |open| {
             if (open == stream) return true;
@@ -624,6 +636,27 @@ fn lineOf(content: []const u8, index: usize) []const u8 {
     }
     const end = std.mem.indexOfScalar(u8, content[start..], '\n') orelse content.len - start;
     return content[start .. start + end];
+}
+
+test "a sent turn, its reply and the next prompt stay on the path" {
+    var editor = try Editor.init(std.testing.allocator);
+    defer editor.deinit();
+
+    try editor.replaceText("ask");
+    _ = editor.markSent();
+    const reply = try editor.appendAssistantTurn();
+    try editor.appendText(reply, "answer");
+    _ = try editor.newPrompt();
+
+    var path: std.ArrayList(Turn) = .empty;
+    defer path.deinit(std.testing.allocator);
+    try editor.path(&path);
+    try std.testing.expectEqual(@as(usize, 3), path.items.len);
+    try std.testing.expectEqual(Kind.prompt, editor.turnKind(path.items[0]));
+    try std.testing.expectEqual(Kind.user, editor.turnKind(path.items[1]));
+    try std.testing.expectEqual(Kind.assistant, editor.turnKind(path.items[2]));
+    try std.testing.expectEqualStrings("ask", editor.turnText(path.items[1]));
+    try std.testing.expectEqualStrings("answer", editor.turnText(path.items[2]));
 }
 
 test "a selection cannot outlive the text it pointed at" {

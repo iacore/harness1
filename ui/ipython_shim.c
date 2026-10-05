@@ -26,7 +26,6 @@ static const char *SETUP =
     "_turns = []\n"
     "def add_turn(text):\n"
     "    _turns.append(str(text))\n"
-    "    print('turn added: ' + str(text))\n"
     "shell.user_ns['add_turn'] = add_turn\n"
     "def _run1_fish(command):\n"
     "    done = subprocess.run(['fish', '-c', command], capture_output=True, text=True)\n"
