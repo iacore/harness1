@@ -23,6 +23,7 @@ const std = @import("std");
 const Io = std.Io;
 const run1 = @import("run1");
 const kitty = @import("kitty.zig");
+const python = @import("python.zig");
 
 pub fn run(init: std.process.Init) !void {
     var editor: Editor = .{ .gpa = init.gpa };
@@ -94,6 +95,7 @@ const Editor = struct {
         switch (key) {
             .byte => |byte| switch (byte) {
                 3 => return true, // Ctrl-C
+                0x13 => self.submit(), // Ctrl-S: send the prompt as a turn
                 9, ':' => self.mode = .command, // Tab, and `:` for a keyboard without one
                 0x7f, 0x08 => self.backspace(),
                 '\r', '\n' => self.insertByte('\n'),
@@ -153,12 +155,52 @@ const Editor = struct {
             self.cursor = 0;
             self.top = 0;
             self.status = "cleared";
-        } else if (command.len == 0) {
-            self.status = "";
         } else {
-            self.status = "unknown command";
+            // Everything else is the scripting language: the line is evaluated
+            // in the embedded interpreter and what it prints is shown.
+            self.evaluate(command);
         }
         return false;
+    }
+
+    /// The prompt going out: the scripting language's `add_turn`, so sending a
+    /// turn is a step like any other.
+    fn submit(self: *Editor) void {
+        const text = self.buffer.items;
+        if (text.len == 0) {
+            self.status = "nothing to send";
+            return;
+        }
+        const output = python.addTurn(self.gpa, text) catch {
+            self.status = "the scripting layer failed";
+            return;
+        };
+        defer self.gpa.free(output);
+        self.buffer.clearRetainingCapacity();
+        self.cursor = 0;
+        self.top = 0;
+        self.show(output);
+    }
+
+    fn evaluate(self: *Editor, line: []const u8) void {
+        const output = python.eval(self.gpa, line) catch {
+            self.status = "the scripting layer failed";
+            return;
+        };
+        defer self.gpa.free(output);
+        self.show(output);
+    }
+
+    /// Puts what the scripting layer printed at the cursor, and its first line
+    /// on the status row.
+    fn show(self: *Editor, output: []const u8) void {
+        if (output.len == 0) {
+            self.status = "";
+            return;
+        }
+        self.buffer.insertSlice(self.gpa, self.cursor, output) catch return;
+        self.cursor += output.len;
+        self.setStatus("{s}", .{std.mem.sliceTo(output, '\n')});
     }
 
     /// Says what `identifier` is: a command, or a feature of the vocabulary and

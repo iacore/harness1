@@ -97,6 +97,10 @@ pub fn startRaw() !RawMode {
     raw.lflag.ICANON = false;
     raw.lflag.ECHO = false;
     raw.lflag.ISIG = false;
+    // Ctrl-S and Ctrl-Q are flow control unless IXON is off, and the UI wants
+    // them as keys.
+    raw.iflag.IXON = false;
+    raw.iflag.IXOFF = false;
     raw.cc[@intCast(@backingInt(linux.V.MIN))] = 1;
     raw.cc[@intCast(@backingInt(linux.V.TIME))] = 0;
     try posix.tcsetattr(stdin, .NOW, raw);
