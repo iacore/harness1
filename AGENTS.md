@@ -41,6 +41,14 @@ its `harnessModule` and `installOmpKeys` rather than duplicating the module or
 the credential install. Do not use `research/python/` for experiments; its whole
 purpose is now gone.
 
+Zig's build is incremental and can watch: `--watch` (with `--build-file
+./build.research.zig` for a research step) rebuilds and re-runs the step
+whenever a source file changes — measured here: `zig build test --watch` ran the
+step again after one `touch` of a source file — so a program being iterated on is
+not re-invoked by hand. `--debounce <ms>` delays the rebuild. And for type errors
+alone, `zls` answers without a build at all: check it is on PATH (`zls
+--version`), and under omp ask the `lsp` tool for `diagnostics`.
+
 ## Coding follows `skill://our-coding-style`
 
 Writing, editing, refactoring, or reviewing code here means reading
