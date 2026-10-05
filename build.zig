@@ -15,14 +15,14 @@ pub fn build(b: *std.Build) void {
     const mod_tests = b.addTest(.{ .root_module = mod });
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
 
-    // `app` is developer-only: the published package carries the library and no
+    // `cmd` is developer-only: the published package carries the library and no
     // program, so the exe exists only in a checkout that has it.
-    if (b.root.access(b.graph.io, "app/main.zig", .{})) |_| {
-        b.dependOnDirectoryContents(b.path("app"));
+    if (b.root.access(b.graph.io, "cmd/main_tui.zig", .{})) |_| {
+        b.dependOnDirectoryContents(b.path("cmd"));
         const exe = b.addExecutable(.{
             .name = "run1",
             .root_module = b.createModule(.{
-                .root_source_file = b.path("app/main.zig"),
+                .root_source_file = b.path("cmd/main_tui.zig"),
                 .target = target,
                 .optimize = optimize,
                 .imports = &.{
@@ -92,7 +92,7 @@ pub fn installOmpKeys(b: *std.Build) *std.Build.Step.InstallFile {
 }
 
 /// What a consumer of the package receives is `build.zig.zon`'s `.paths` and
-/// nothing else — `app` is developer-only, and the program is gated on it. A
+/// nothing else — `cmd` is developer-only, and the program is gated on it. A
 /// whitelisted tree can still fail to build when a shipped file reaches for one
 /// that was left out, and no ordinary build of the dev tree catches that, so
 /// the tests rebuild the package from the whitelist alone under a scratch

@@ -10,9 +10,10 @@ with it the omp2 precedent.
 
 ## What exists now
 
-Nothing is split. `app/main.zig` prints the system prompt and exits, and the
-library's only concurrency is `src/curl.zig` spawning one thread per in-flight
-request. `setpgid`, `setsid`, `signalfd`, `waitpid` and `CLOEXEC` appear nowhere
+Nothing is split. `cmd/main_tui.zig` is a terminal editor, and it prints the
+system prompt instead when stdin is not a terminal; the library's only
+concurrency is `src/curl.zig` spawning one thread per in-flight request.
+`setpgid`, `setsid`, `signalfd`, `waitpid` and `CLOEXEC` appear nowhere
 in the tree. So "a running prompt" is a conversation in a single process today, and the
 process-group rule holds vacuously because there is one process.
 

@@ -12,7 +12,7 @@
     // `src/remote/` that a user of the client reads. Developer-only source is
     // left out — the research programs under `research`, the Python
     // scratch client under `research/python`, and `build.research.zig`, which drives
-    // them. The program under `app` is developer-only as well. `src/` is named
+    // them. The program under `cmd` is developer-only as well. `src/` is named
     // file by file: every file the library reaches must be listed here, and
     // `zig build test` enforces that by rebuilding the package from this list.
     .paths = .{
