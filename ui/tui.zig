@@ -1,14 +1,17 @@
 //! The TUI mode: a terminal editor with a multi-line prompt buffer and a
-//! separate command buffer. Tab switches between them, and Tab again switches
-//! back; the two never share text.
+//! separate command buffer. Tab switches from the prompt to the command line;
+//! on the command line Tab completes the word when there is one, and returns to
+//! the prompt when the line is empty.
 //!
-//!   Tab           switch between the prompt and the command line
-//!   :             also opens the command line
-//!   Enter         a newline on the prompt; runs the command on the command line
-//!   q, quit, exit leave             (a command)
-//!   prompt, system load the harness system prompt into the prompt buffer
-//!   clear         empty the prompt buffer
-//!   ipython, python open an embedded IPython session; run1 exits when it ends
+//!   Tab              prompt → command; on the command line, complete, or leave
+//!                    when it is empty
+//!   :                also opens the command line
+//!   Enter            a newline on the prompt; runs the command on the command line
+//!   q, quit, exit    leave run1                    (a command)
+//!   prompt, system   load the harness system prompt into the prompt buffer
+//!   clear            empty the prompt buffer
+//!   <ident>?         say what an identifier is — a command, or a feature of the
+//!                    vocabulary and whether it is implemented
 //!
 //! Editing goes by grapheme, not by byte: Backspace and Delete remove a whole
 //! cluster, the arrows step one, Home and End go to the line's ends, and
@@ -20,7 +23,6 @@ const std = @import("std");
 const Io = std.Io;
 const run1 = @import("run1");
 const kitty = @import("kitty.zig");
-const python = @import("python.zig");
 
 pub fn run(init: std.process.Init) !void {
     var editor: Editor = .{ .gpa = init.gpa };
@@ -29,42 +31,29 @@ pub fn run(init: std.process.Init) !void {
     if (init.environ_map.get("LINES")) |value| editor.rows = std.fmt.parseInt(usize, value, 10) catch 24;
 
     // No terminal to draw on: the caller falls back to the CLI.
-    var terminal = Terminal.open() catch return error.NotATerminal;
-    defer terminal.close();
+    const raw = kitty.startRaw() catch return error.NotATerminal;
+    defer raw.deinit();
+    kitty.write(kitty.enter_alternate_screen) catch {};
+    defer kitty.write(kitty.leave_alternate_screen ++ kitty.show_cursor) catch {};
 
     editor.render();
     while (true) {
         const key = kitty.readKey() catch break;
         if (try editor.handle(key)) break;
-        if (editor.embed_requested) {
-            editor.embed_requested = false;
-            // IPython needs the terminal back, and it ends the program: a
-            // normal return from `embed` — Ctrl-D, or `exit()` — is run1's own
-            // normal exit. Only a session that could not start comes back.
-            terminal.close();
-            if (python.embed() == 0) return;
-            terminal = try Terminal.open();
-            editor.status = "IPython did not run";
-        }
         editor.render();
     }
 }
 
-/// Raw mode and the alternate screen, held together so they leave together
-/// when an IPython session borrows the terminal.
-const Terminal = struct {
-    raw: kitty.RawMode,
+/// A command on the command line, and the line `name?` answers with.
+const Command = struct { name: []const u8, help: []const u8 };
 
-    fn open() !Terminal {
-        const raw = try kitty.startRaw();
-        kitty.write(kitty.enter_alternate_screen) catch {};
-        return .{ .raw = raw };
-    }
-
-    fn close(self: Terminal) void {
-        kitty.write(kitty.leave_alternate_screen ++ kitty.show_cursor) catch {};
-        self.raw.deinit();
-    }
+const commands = [_]Command{
+    .{ .name = "q", .help = "command: leave run1" },
+    .{ .name = "quit", .help = "command: leave run1" },
+    .{ .name = "exit", .help = "command: leave run1" },
+    .{ .name = "prompt", .help = "command: load the harness system prompt" },
+    .{ .name = "system", .help = "command: load the harness system prompt" },
+    .{ .name = "clear", .help = "command: empty the prompt buffer" },
 };
 
 const Editor = struct {
@@ -77,9 +66,7 @@ const Editor = struct {
     command: std.ArrayList(u8) = .empty,
     mode: Mode = .prompt,
     status: []const u8 = "",
-    /// Set by the `ipython` command, read by the loop, which hands the
-    /// terminal to the embedded session.
-    embed_requested: bool = false,
+    status_buffer: [192]u8 = undefined,
     cols: usize = 80,
     rows: usize = 24,
     /// The display row drawn on the editor's first row.
@@ -90,6 +77,10 @@ const Editor = struct {
     fn deinit(self: *Editor) void {
         self.buffer.deinit(self.gpa);
         self.command.deinit(self.gpa);
+    }
+
+    fn setStatus(self: *Editor, comptime format: []const u8, args: anytype) void {
+        self.status = std.fmt.bufPrint(&self.status_buffer, format, args) catch self.status_buffer[0..0];
     }
 
     fn handle(self: *Editor, key: kitty.Key) !bool {
@@ -124,7 +115,11 @@ const Editor = struct {
         switch (key) {
             .byte => |byte| switch (byte) {
                 3 => return true, // Ctrl-C
-                9 => self.mode = .prompt, // Tab switches back
+                9 => if (self.command.items.len == 0) {
+                    self.mode = .prompt;
+                } else {
+                    self.complete();
+                },
                 0x7f, 0x08 => if (self.command.items.len > 0) {
                     _ = self.command.pop();
                 },
@@ -139,14 +134,20 @@ const Editor = struct {
 
     fn run(self: *Editor) bool {
         const command = std.mem.trim(u8, self.command.items, " \t");
+        // Cleared after the command is used: `command` borrows that buffer.
+        defer self.command.clearRetainingCapacity();
         self.mode = .prompt;
+
+        // `ident?` — or `ident??` — asks what something is rather than doing it.
+        if (std.mem.endsWith(u8, command, "?")) {
+            self.describe(std.mem.trimEnd(u8, command, "?"));
+            return false;
+        }
         if (eq(command, "q") or eq(command, "quit") or eq(command, "exit")) return true;
         if (eq(command, "prompt") or eq(command, "system")) {
             self.loadSystemPrompt() catch {
                 self.status = "could not load the system prompt";
             };
-        } else if (eq(command, "ipython") or eq(command, "python") or eq(command, "py")) {
-            self.embed_requested = true;
         } else if (eq(command, "clear")) {
             self.buffer.clearRetainingCapacity();
             self.cursor = 0;
@@ -157,8 +158,47 @@ const Editor = struct {
         } else {
             self.status = "unknown command";
         }
-        self.command.clearRetainingCapacity();
         return false;
+    }
+
+    /// Says what `identifier` is: a command, or a feature of the vocabulary and
+    /// whether the harness implements it.
+    fn describe(self: *Editor, identifier: []const u8) void {
+        if (identifier.len == 0) {
+            self.status = "";
+            return;
+        }
+        for (commands) |command| {
+            if (eq(command.name, identifier)) {
+                self.setStatus("{s} — {s}", .{ identifier, command.help });
+                return;
+            }
+        }
+        const omp = run1.omp_features;
+        inline for (std.enums.values(omp.Kind)) |kind| {
+            for (omp.table(kind)) |value| {
+                if (eq(value, identifier)) {
+                    self.setStatus("{s} — {s}, {s}", .{
+                        identifier,
+                        @tagName(kind),
+                        if (omp.isImplemented(kind, value)) "implemented" else "not implemented",
+                    });
+                    return;
+                }
+            }
+        }
+        self.setStatus("{s} — nothing here goes by that name", .{identifier});
+    }
+
+    /// Replaces the word before the cursor with the next candidate it prefixes.
+    fn complete(self: *Editor) void {
+        const text = self.command.items;
+        var start = text.len;
+        while (start > 0 and text[start - 1] != ' ') start -= 1;
+        const word = text[start..];
+        const next = nextCompletion(word) orelse return;
+        self.command.items.len = start;
+        self.command.appendSlice(self.gpa, next) catch {};
     }
 
     fn loadSystemPrompt(self: *Editor) !void {
@@ -169,7 +209,7 @@ const Editor = struct {
         try self.buffer.appendSlice(self.gpa, out.written());
         self.cursor = 0;
         self.top = 0;
-        self.status = "loaded the harness system prompt";
+        self.setStatus("loaded the harness system prompt", .{});
     }
 
     // ── Editing, by grapheme ────────────────────────────────────────────────
@@ -268,12 +308,12 @@ const Editor = struct {
         var cells: usize = 0;
         var i: usize = 0;
         while (i < text.len) {
-            const cells_here = kitty.clusterWidth(text, i);
-            if (cells != 0 and cells + cells_here > width) {
+            const here = kitty.clusterWidth(text, i);
+            if (cells != 0 and cells + here > width) {
                 rows += 1;
                 cells = 0;
             }
-            cells += cells_here;
+            cells += here;
             i = kitty.nextGrapheme(text, i);
         }
         return rows;
@@ -291,14 +331,14 @@ const Editor = struct {
                 if (row == target) return .{ .start = start, .end = text.len };
                 return null;
             }
-            const cells_here = kitty.clusterWidth(text, i);
-            if (cells != 0 and cells + cells_here > width) {
+            const here = kitty.clusterWidth(text, i);
+            if (cells != 0 and cells + here > width) {
                 if (row == target) return .{ .start = start, .end = i };
                 row += 1;
                 start = i;
                 cells = 0;
             }
-            cells += cells_here;
+            cells += here;
             i = kitty.nextGrapheme(text, i);
         }
     }
@@ -313,7 +353,8 @@ const Editor = struct {
         var row: usize = 0;
         var line: usize = 0;
         while (line < cursor_line) : (line += 1) row += self.lineRows(line);
-        return .{ .row = row + self.cellsBefore(self.cursor) / self.columns(), .col = self.cellsBefore(self.cursor) % self.columns() };
+        const cells = self.cellsBefore(self.cursor);
+        return .{ .row = row + cells / self.columns(), .col = cells % self.columns() };
     }
 
     // ── Drawing ─────────────────────────────────────────────────────────────
@@ -359,6 +400,22 @@ const Editor = struct {
         }
     }
 };
+
+/// The next name `word` prefixes: a command first, then a feature of the
+/// vocabulary. The first match, not a cycle — Tab completes rather than walks.
+fn nextCompletion(word: []const u8) ?[]const u8 {
+    if (word.len == 0) return null;
+    for (commands) |command| {
+        if (command.name.len > word.len and std.mem.startsWith(u8, command.name, word)) return command.name;
+    }
+    const omp = run1.omp_features;
+    inline for (std.enums.values(omp.Kind)) |kind| {
+        for (omp.table(kind)) |value| {
+            if (value.len > word.len and std.mem.startsWith(u8, value, word)) return value;
+        }
+    }
+    return null;
+}
 
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);

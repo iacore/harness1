@@ -12,7 +12,6 @@ pub fn main(init: std.process.Init) !void {
     tui.run(init) catch |err| switch (err) {
         // No terminal to draw on: the CLI carries the same prompt.
         error.NotATerminal => return cli.run(init),
-        else => return err,
     };
 }
 
