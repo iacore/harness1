@@ -273,7 +273,17 @@ const Tui = struct {
     fn save(self: *Tui) void {
         if (self.doc.nodes.items.len == self.resumed_with) return;
         const filing = self.label() orelse return;
-        if (self.world) |*w| self.doc.save(w, filing) catch {};
+        if (self.world) |*w| {
+            self.doc.save(w, filing) catch |err| {
+                // The picker will not show this run, and silence would read as
+                // a resume that forgot: a store that ran out of room says so.
+                var buffer: [256]u8 = undefined;
+                var stderr_file = Io.File.stderr().writerStreaming(self.io, &buffer);
+                var logger = debug.writer(&stderr_file.interface);
+                logger.report("session:not_filed", "{t}", .{err});
+                stderr_file.interface.flush() catch {};
+            };
+        }
     }
 
     /// What the run is filed under: the first thing said in it, one line, cut
