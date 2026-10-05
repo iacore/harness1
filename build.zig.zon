@@ -25,6 +25,7 @@
         "src/json_encoder.zig",
         "src/omp_features.zig",
         "src/turns.zig",
+        "src/system_prompt.zig",
         "src/debug.zig",
         "src/remote",
     },

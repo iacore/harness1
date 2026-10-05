@@ -5,6 +5,7 @@ pub const json_encoder = @import("json_encoder.zig");
 pub const debug = @import("debug.zig");
 pub const omp_features = @import("omp_features.zig");
 pub const turns = @import("turns.zig");
+pub const system_prompt = @import("system_prompt.zig");
 pub const curl = @import("curl.zig");
 pub const keys = @import("./remote/keys.zig");
 pub const deepseek = @import("./remote/deepseek.zig");

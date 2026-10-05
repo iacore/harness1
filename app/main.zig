@@ -8,6 +8,6 @@ const run1 = @import("run1");
 pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var out = Io.File.stdout().writerStreaming(init.io, &buffer);
-    try run1.turns.systemPrompt(&out.interface);
+    try run1.system_prompt.systemPrompt(&out.interface);
     try out.flush();
 }
