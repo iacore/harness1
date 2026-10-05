@@ -45,6 +45,10 @@ pub const Tag = struct { key: []const u8, value: []const u8 };
 pub const Node = struct {
     kind: Kind,
     text: std.ArrayList(u8) = .empty,
+    /// What the turn thought before it answered. Kept apart from `text`
+    /// because it is not what was said: it is drawn, and it is not part of the
+    /// message the turn becomes.
+    reasoning: std.ArrayList(u8) = .empty,
     /// The turn this one answers, or null for the root.
     parent: ?usize = null,
     /// The revision this turn belongs to.
@@ -108,6 +112,7 @@ pub const Editor = struct {
     pub fn deinit(self: *Editor) void {
         for (self.nodes.items) |*node| {
             node.text.deinit(self.gpa);
+            node.reasoning.deinit(self.gpa);
             for (node.tags.items) |entry| {
                 self.gpa.free(entry.key);
                 self.gpa.free(entry.value);
@@ -297,6 +302,17 @@ pub const Editor = struct {
             self.cursor = self.nodes.items[turn].text.items.len;
             self.anchor = self.cursor;
         }
+    }
+
+    pub fn turnReasoning(self: *Editor, turn: Turn) []const u8 {
+        if (turn >= self.nodes.items.len) return "";
+        return self.nodes.items[turn].reasoning.items;
+    }
+
+    /// Appends to a turn's chain of thought, which streams ahead of the answer.
+    pub fn appendReasoning(self: *Editor, turn: Turn, content: []const u8) !void {
+        if (turn >= self.nodes.items.len) return;
+        try self.nodes.items[turn].reasoning.appendSlice(self.gpa, content);
     }
 
     pub fn isStreaming(self: *Editor, stream: Stream) bool {
