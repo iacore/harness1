@@ -85,7 +85,9 @@ pub const Screen = struct {
     }
 };
 
+/// Frees the rows of a list this file built, and the list: `clearAndFree` goes
+/// through the pointer, where `deinit` would only free a copy.
 fn freeRows(gpa: Allocator, rows: *std.ArrayList([]u8)) void {
     for (rows.items) |text| gpa.free(text);
-    rows.clearRetainingCapacity();
+    rows.clearAndFree(gpa);
 }
