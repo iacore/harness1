@@ -53,7 +53,9 @@ def main(argv):
     database, provider = argv[1], argv[2]
     try:
         # Read-only, so that a store that is not there is not created by
-        # looking for it, and because nothing here ever writes.
+        # looking for it, and because nothing here ever writes. The
+        # connection's own context manager is a transaction, which a read
+        # has no use for; close it directly instead.
         connection = sqlite3.connect(f"file:{quote(database)}?mode=ro", uri=True)
         try:
             row = connection.execute(SQL, (provider,)).fetchone()
