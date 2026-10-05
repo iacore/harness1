@@ -91,3 +91,20 @@ file (TLS 1.3 tickets arrive after the handshake, and the test closed first), so
 it is untested rather than ruled out.
 
 The only lever is the connection itself.
+
+## The response reader must carry a buffer
+
+Found 2026-10-05, fixed the same day. `Io.Reader` reaches the transport's
+`stream` only when its own `buffer` is empty; every buffered entry point —
+`peek`, `takeDelimiter`, and so `std.json` — first calls `rebase` to make room,
+and `defaultRebase` opens with `assert(r.buffer.len - r.seek >= capacity)`. A
+reader with no buffer therefore trips that assert the moment one of them asks
+for a byte.
+
+`curl.zig` handed out exactly such a reader (`.buffer = &.{}`), so after the
+libcurl transport landed nothing could read a body: `chat.send` panicked inside
+`std.json`'s scanner, and `chat.sendStream` returned `error.StreamTooLong` from
+`takeDelimiter`. Giving each `Response` a 16 KiB buffer (freed with it) fixes
+both; `research/lithos/lithos_probe.zig` and `..._media_probe.zig` now run to
+completion. Measured, not reasoned: the two probes failed with the traces above
+before the change and pass after.

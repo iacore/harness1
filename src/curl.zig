@@ -193,18 +193,25 @@ pub const Client = struct {
             state.deinit(allocator);
             return .{ .failure = .out_of_memory };
         };
+        const buffer = allocator.alloc(u8, reader_buffer_len) catch {
+            allocator.destroy(response);
+            state.deinit(allocator);
+            return .{ .failure = .out_of_memory };
+        };
         response.* = .{
             .allocator = allocator,
             .state = state,
+            .buffer = buffer,
             .reader_value = .{
                 .vtable = &reader_vtable,
-                .buffer = &.{},
+                .buffer = buffer,
                 .seek = 0,
                 .end = 0,
             },
             .thread = undefined,
         };
         response.thread = std.Thread.spawn(.{}, run, .{ state, method, headers }) catch {
+            allocator.free(buffer);
             allocator.destroy(response);
             state.deinit(allocator);
             return .{ .failure = .setup_failed };
@@ -273,9 +280,18 @@ const State = struct {
     }
 };
 
+/// The reader's own buffer. `Io.Reader` only reaches `stream` for an empty
+/// buffer; every buffered entry point (`peek`, `takeDelimiter`, and so
+/// `std.json`) first rebases into `buffer`, so a reader with none panics in
+/// `defaultRebase` the moment one of them asks for a byte. The body arrives in
+/// `State`; this only bounds what one `fill` may hold.
+const reader_buffer_len = 16 << 10;
+
 pub const Response = struct {
     allocator: Allocator,
     state: *State,
+    /// Backs `reader_value`; freed in `deinit`.
+    buffer: []u8,
     reader_value: Io.Reader,
     thread: std.Thread,
 
@@ -288,6 +304,7 @@ pub const Response = struct {
         self.state.cond.broadcast(io);
         self.state.mutex.unlock(io);
         self.thread.join();
+        allocator.free(self.buffer);
         self.state.deinit(allocator);
         allocator.destroy(self);
     }
