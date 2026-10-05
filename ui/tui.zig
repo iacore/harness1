@@ -1090,6 +1090,9 @@ const Tui = struct {
                 self.lineRow(width, ">>> ", self.command.items) catch {};
                 self.frame.place(self.rows - 1, @min(self.command_cursor + 4, width - 1));
             },
+            // The sheet is scrolled, not edited, so its rows are not a place a
+            // cursor can be: the position it would have is not computed.
+            .sheet => self.frame.place(self.rows - 1, 0),
             else => self.frame.place(1 + (cursor_row - self.top), @min(cursor_col, width - 1)),
         }
         self.frame.flush();
