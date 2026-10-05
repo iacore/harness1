@@ -1,0 +1,111 @@
+To: <LithosAI support address>
+Subject: API v1 — media input is undocumented, per-model and silently dropped; no file upload API
+
+Hello,
+
+I use api.lithosai.cloud/v1 and spent a day probing how it carries media input,
+against deepseek-ai/DeepSeek-V4.1-Flash and moonshotai/Kimi-K3 on 2026-10-05.
+Image input works; audio and video do not; and the failures are of the three
+kinds that cost a caller the most time: undocumented, inconsistent per model,
+and silent. Four bugs, then three things I would like to see added.
+
+Bugs
+
+1. Image input works, and nothing documents it.
+
+An image_url content part with an https URL, or with a
+data:image/...;base64,... URL, returns 200 and the model reads the picture —
+prompt_tokens 209 with the image against 14 for the same question alone. A
+detail field is accepted. This is good behaviour that no one can discover: your
+reference (docs.lithosai.com/openapi.yaml, info.version 2026-09-17) types a
+message's content as string|array|null with no part schema. Please document the
+content-part shape the endpoint already accepts.
+
+2. Audio and video parts are accepted and then dropped — or rejected,
+   depending on the model.
+
+- moonshotai/Kimi-K3 returns 400 "Kimi-K3 supports image input only" for
+  video_url, input_audio and audio_url. That is the right answer.
+- deepseek-ai/DeepSeek-V4.1-Flash accepts all three with HTTP 200 and delivers
+  nothing. The model is told the part is unsupported: for a video_url part it
+  answers that the video "isn't accessible", for input_audio and audio_url
+  that the audio "didn't come through" or is marked unsupported. An
+  unreachable URL in either part also returns 200 with no load error — the same
+  prompt_tokens as a reachable one (20 with video_url, 19 with audio_url,
+  against 14 for the same text alone, where an image part adds about 195). So
+  no media is tokenised and no URL is even fetched.
+
+A minimal repro is one POST /v1/chat/completions whose user content is a
+video_url, input_audio or audio_url part plus a text part. It returns 200 on
+DeepSeek and the model answers that it cannot see or hear it.
+
+If DeepSeek on your engine cannot take these inputs, reject them the way
+Kimi-K3 does instead of accepting and discarding them. An input that is
+accepted and ignored is worse than one that is refused: the model is told the
+part is "unsupported", leaking a serving detail into its context, and the
+caller has no error to act on.
+
+3. Error bodies leak your server internals and misdirect the caller.
+
+Three examples from the same session:
+
+- Undecodable image URL, DeepSeek: 400 "An exception occurred while loading
+  IMAGE data at index 0: Error while loading data ImageData(url='https://...'):
+  Could not d..."
+- Same, Kimi-K3: 400 "Could not decode image: cannot identify image file
+  <_io.BytesIO object at 0x77f7cd34b470>"
+- Unknown part type: 400 "messages.0.function-after[validate_thinking_parts_role(),
+  ChatCompletionMessageGenericParam].role: Value error, 'role' must be one of
+  'system', 'assistant', 'tool', 'function', 'developer', 'latest_reminder'..."
+
+These expose a Python object repr, a heap address, and Pydantic validator and
+class names, and the third points the caller at role when the real problem is
+the part type (a file_id part is rejected this way too). Please return a plain
+error that names the offending field and part type.
+
+4. There is no way to know which model supports which media.
+
+GET /v1/models and GET /v1/models/{author}/{slug} return only id, object,
+created and owned_by. Kimi-K3's media policy is discoverable only by getting a
+400; DeepSeek's is not discoverable at all, because it answers 200. Add per
+model capability fields (for example input: text and/or image and/or audio
+and/or video) to the model objects, or a capabilities endpoint.
+
+Requests
+
+5. Audio input. Support it, at least for models that can take it. OpenAI's
+   input_audio shape — a base64 payload with a format — or an audio_url
+   reference would both be fine; what matters is that a supported model
+   receives the audio and that an unsupported one is refused clearly. Today
+   neither happens: the part is accepted and marked unsupported on DeepSeek,
+   and rejected on Kimi-K3.
+
+6. Video input, actually served. If video is on the roadmap, say which models
+   will support it and in what form (a video_url part, or frames as images);
+   if it is not, remove video_url from the accepted part set so it stops
+   answering 200 with nothing behind it.
+
+7. A file upload API. There is none today: GET and multipart POST /v1/files
+   both 404, and a file_id content part is rejected. The two things missing are
+   an upload endpoint that returns an id (multipart POST /v1/files →
+   {id, object, bytes, purpose}), with GET and DELETE alongside it, and content
+   parts that reference a stored file by id, so a large image, audio clip or
+   video does not have to be inlined as base64 in every request or re-fetched
+   from a third-party URL. Keeping the URL reference as well is useful; the
+   upload path is what makes audio and video practical.
+
+Priority, if it helps:
+
+- Make unsupported audio and video fail with 400 instead of 200-and-drop.
+- Add the file upload API, then audio and video input.
+- Document the content-part schema, including image input.
+- Publish per-model media capabilities.
+- Stop returning Python reprs, addresses and validator class names in 4xx
+  bodies.
+
+Reproductions are raw POST /v1/chat/completions requests with the content parts
+above; I can send the full request/response pairs, including headers, on
+request.
+
+Thanks,
+<name>
