@@ -2,11 +2,12 @@ const std = @import("std");
 const Io = std.Io;
 const run1 = @import("run1");
 
-/// Emits the harness system prompt: the full feature vocabulary with the
-/// implemented features marked. The agent loop that follows reads it from here.
+/// Prints the harness system prompt: the full feature vocabulary with the
+/// implemented features marked. It is printed rather than assembled, so the same
+/// writer that draws it can be the one that sends it to the API.
 pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
-    const prompt = try run1.omp_features.systemPrompt(arena);
-    const text = try prompt.flatten(arena);
-    try Io.File.stdout().writeStreamingAll(init.io, text);
+    var buffer: [4096]u8 = undefined;
+    var out = Io.File.stdout().writerStreaming(init.io, &buffer);
+    try run1.turns.systemPrompt(&out.interface);
+    try out.flush();
 }

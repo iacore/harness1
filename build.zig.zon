@@ -24,6 +24,7 @@
         "src/curl_shim.c",
         "src/json_encoder.zig",
         "src/omp_features.zig",
+        "src/turns.zig",
         "src/debug.zig",
         "src/remote",
     },

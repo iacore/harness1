@@ -2,10 +2,10 @@
 //! recorded session corpus, grouped by the slot a value occupies, plus the
 //! subset this harness implements today.
 //!
-//! `systemPrompt` renders all of it as a rope, so the agent reads the full
-//! list of potential features and which are implemented. A potential feature
-//! that is not implemented is something the agent must stop and ask for rather
-//! than guess at.
+//! The prompt that carries it is `prompt.zig`: it prints the full list of
+//! potential features, marking the implemented ones, and a feature that is not
+//! implemented is something the running prompt asks for rather than guesses at;
+//! carrying the instruction out is not required of it.
 //!
 //! The tables are the closed vocabulary. Adding a name here only declares it
 //! possible; implementing it means acting on it and recording that in
@@ -270,118 +270,20 @@ pub fn table(kind: Kind) []const []const u8 {
     };
 }
 
-// ── System prompt ───────────────────────────────────────────────────────────
+// ── Prompt vocabulary ───────────────────────────────────────────────────────
 
-/// A concatenation tree over the bytes of a string. The prompt composes as a
-/// rope so its parts join without intermediate copies; flatten it only when the
-/// bytes are needed.
-pub const Rope = union(enum) {
-    leaf: []const u8,
-    concat: []const Rope,
-
-    /// Byte length of the rope's content.
-    pub fn length(self: Rope) usize {
-        return switch (self) {
-            .leaf => |s| s.len,
-            .concat => |children| blk: {
-                var total: usize = 0;
-                for (children) |child| total += child.length();
-                break :blk total;
-            },
-        };
-    }
-
-    /// Appends the rope's bytes, in order, to `bytes`.
-    pub fn appendTo(self: Rope, bytes: *std.ArrayList(u8), allocator: std.mem.Allocator) !void {
-        switch (self) {
-            .leaf => |s| try bytes.appendSlice(allocator, s),
-            .concat => |children| for (children) |child| try child.appendTo(bytes, allocator),
-        }
-    }
-
-    /// Allocates the rope's content as one slice.
-    pub fn flatten(self: Rope, allocator: std.mem.Allocator) ![]u8 {
-        var bytes: std.ArrayList(u8) = .empty;
-        errdefer bytes.deinit(allocator);
-        try self.appendTo(&bytes, allocator);
-        return bytes.toOwnedSlice(allocator);
-    }
-};
-
-const prompt_header =
-    \\# Harness features
-    \\
-    \\This harness implements the features marked `[+]`. A feature listed
-    \\without `[+]` exists in the vocabulary but is not implemented here: do
-    \\not guess at it — stop and ask for it to be implemented.
-    \\
-    \\
-;
-
-const operation_tools = [_][]const u8{
+/// The tools whose operations the prompt lists under `tool_operation`, in the
+/// order it lists them. `prompt.zig` reads this.
+pub const operation_tools = [_][]const u8{
     "browser",   "edit",        "eval",      "goal",       "hub",
     "irc",       "lsp",         "manage_skill", "memory_edit", "read",
     "resolve",   "todo",        "vibe_kill", "vibe_send",  "vibe_spawn",
     "vibe_wait", "wait",        "worktree",  "yield",
 };
 
-/// The system-prompt section as a rope: the full list of potential features,
-/// each marked `[+]` when implemented, then the implemented subset. Leaves
-/// borrow the tables, so the rope lives no longer than them.
-pub fn systemPrompt(allocator: std.mem.Allocator) !Rope {
-    var children: std.ArrayList(Rope) = .empty;
-    errdefer children.deinit(allocator);
-
-    try children.append(allocator, .{ .leaf = prompt_header });
-    inline for (std.enums.values(Kind)) |kind| {
-        try children.append(allocator, .{ .leaf = try std.fmt.allocPrint(allocator, "{s}:\n", .{@tagName(kind)}) });
-        const values = table(kind);
-        if (values.len == 0) {
-            try children.append(allocator, .{ .leaf = "  (none)\n" });
-        } else {
-            for (values) |value| {
-                try children.append(allocator, .{ .leaf = try std.fmt.allocPrint(allocator, "  {s} {s}\n", .{ if (isImplemented(kind, value)) "[+]" else "[ ]", value }) });
-            }
-        }
-        try children.append(allocator, .{ .leaf = "\n" });
-    }
-
-    try children.append(allocator, .{ .leaf = "tool_operation:\n" });
-    for (operation_tools) |tool| {
-        for (operation_keys) |key| {
-            const values = operationValues(tool, key) orelse continue;
-            for (values) |value| {
-                try children.append(allocator, .{ .leaf = try std.fmt.allocPrint(allocator, "  {s} {s}.{s}.{s}\n", .{ if (isImplemented(.tool, tool)) "[+]" else "[ ]", tool, key, value }) });
-            }
-        }
-    }
-
-    try children.append(allocator, .{ .leaf = "\n# Implemented features\n\n" });
-    if (implemented.len == 0) {
-        try children.append(allocator, .{ .leaf = "none\n" });
-    } else {
-        for (implemented) |f| {
-            try children.append(allocator, .{ .leaf = try std.fmt.allocPrint(allocator, "{s}: {s}\n", .{ @tagName(f.kind), f.value }) });
-        }
-    }
-
-    return .{ .concat = try children.toOwnedSlice(allocator) };
-}
-
-test "the rope holds the whole vocabulary, with nothing implemented yet" {
+test "the tables are the closed vocabulary" {
     inline for (std.enums.values(Kind)) |kind| {
         try std.testing.expect(table(kind).len > 0 or kind == .hud_visibility);
     }
     try std.testing.expect(!isImplemented(.mode, "goal"));
-
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const rope = try systemPrompt(arena.allocator());
-    const text = try rope.flatten(arena.allocator());
-
-    try std.testing.expectEqual(text.len, rope.length());
-    try std.testing.expect(std.mem.indexOf(u8, text, "# Harness features") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "Implemented features") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "  [ ] bash\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "  [ ] hub.op.jobs\n") != null);
 }
