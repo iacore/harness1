@@ -38,6 +38,12 @@ contract not visible in the signature — or it is deleted. And anything that ca
 be expressed in code — a constraint, an invariant, a value — is expressed in
 code, not described.
 
+## Remember to commit work
+
+A piece of work is finished by committing it. A change left in the working tree
+is not done — the next reader cannot see it, and the next turn cannot build on
+it.
+
 ## Other notes
 
 Measurements live beside the code that produced them:
