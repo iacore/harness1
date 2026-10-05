@@ -1,26 +1,13 @@
 # AGENTS.md
 
-## The Python under `research/python/` is not the harness — do not use it
+## Some words are defined in `research/terminology.dj`
 
-`research/python/harness1.py`, `research/python/loop.py` and
-`research/python/play.py` are a scratch client kept for now. Do not import it,
-build on it, extend it, or copy its API. The harness of record is the Zig under
-`src/`, reached through `src/root.zig`: `src/remote/deepseek.zig` is the
-DeepSeek client. Any work that needs a chat-completions client goes there,
-not here. `src/` is a library module: its public surface is exactly what
-`src/root.zig` re-exports. The program is not there. `fn main` and the TUI live
-in `app/`, whose `main.zig` is the executable root in `build.zig`. `app/`
-imports the `harness1` module; `src/` can never import `app/`, because Zig
-rejects any import that leaves the module's directory (`import of file outside
-module path`). `app/` is developer-only and is left out of the published
-package's `.paths`, so the shipped `build.zig` gates the exe on `app/main.zig`
-being present. `zig build test` guards the whitelist: it copies the `.paths`
-entries into a scratch directory and rebuilds the package there, so a library
-file that is reached but not listed fails the test.
-
-The only Python the build needs is `src/remote/omp-keys.py`, which
-`src/remote/keys.zig` runs to read omp's credential store. That is not the
-scratch client and is not covered by this note.
+`research/terminology.dj` fixes what `agent`, `prompt` and `last prompt` mean
+here — an agent is a running prompt, a prompt is every chat turn visible to the
+LithosAI API, the last prompt is the last turn — and carries the constraint that
+every harness1 agent on a machine shares a single Linux process group. Use the
+words with those meanings, and add to that file rather than redefining them
+elsewhere.
 
 ## Experiments too: write small Zig programs, not Python
 
@@ -45,7 +32,7 @@ contract not visible in the signature — or it is deleted. And anything that ca
 be expressed in code — a constraint, an invariant, a value — is expressed in
 code, not described.
 
-## AI notes
+## Other notes
 
 Measurements live beside the code that produced them:
 

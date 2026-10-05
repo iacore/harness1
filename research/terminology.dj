@@ -1,0 +1,23 @@
+# Terminology
+
+The words this project uses, and what they mean here. They are definitions, not
+descriptions: code, comments and documents use them with exactly these meanings.
+
+: agent
+
+  A running prompt. An agent forks itself, or spawns a new agent, by assembling
+  that prompt; no other state passes between them.
+
+: prompt
+
+  Every chat turn visible to the LithosAI API. Anything the API cannot see is not
+  part of the prompt.
+
+: last prompt
+
+  The last turn.
+
+## Constraints
+
+- Every harness1 agent on a machine shares a single Linux process group, so the
+  machine's whole set of running prompts can be signalled as one.
