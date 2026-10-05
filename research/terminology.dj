@@ -22,7 +22,7 @@ descriptions: code, comments and documents use them with exactly these meanings.
   The whole of what has been experienced — global, and unique as one. See
   `research/agent-world.dj`.
 
-## A word we do not define
+## Words we do not define
 
 `agent` is fine to say to outsiders, where it is the industry word. It is not a
 term here, and not because it is vague: its default meaning is an *owner* — a thing
@@ -35,6 +35,13 @@ The tell is a possessive: "the agent's turns", "the agent's state", "its files".
 Wherever one of those appears, the word has put an owner back. Name the thing
 instead — the runner is a `running prompt`, the turns are the `prompt`, and what
 has been experienced is the `world model`.
+
+`skill` is omp's word for a first-class object: a named directory with a
+`SKILL.md`, which the harness lists, matches by name and installs. run1 will not
+have that concept. What a skill carries is text to put in a prompt, and text the
+harness hands over is a turn, not an object with a name, a state and a lifetime
+of its own. "The skill's instructions" puts an owner back on the text — the same
+tell as `agent` — so say what the text is and where it went instead.
 
 ## Constraints
 
