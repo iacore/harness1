@@ -1,0 +1,46 @@
+# World model
+
+The whole of what has been experienced. Global and unique: there is one, not one
+per running prompt. It is not necessarily a Linux file — where it is kept is
+`research/persistence.dj`'s business.
+
+## A running prompt recalls; it does not contain
+
+A running prompt may not hold the world model: it may recall early experience
+from it. So a running prompt is a window over the record, not its owner and not a
+container of it. What it holds at any moment are the turns visible to the API
+(`research/turns.dj`); everything else, it recalls.
+
+## 自性空 — nothing in it stands alone
+
+Assume nothing does. Nothing in the world model has an own-nature: what it is, it
+is in relation to the rest.
+
+Forking states this outright. When a running prompt forks, *both* sides know the
+point they forked from — the relation is recorded on both sides, and neither is
+complete by itself. A part of the record read in isolation is therefore missing
+something by construction, not by accident.
+
+## Continuity
+
+The world model is continuous rather than a snapshot: an edit to an early turn is
+part of it, not something the edit overwrote. What it holds is a history, and its
+current state is a reading of that history.
+
+That is also what makes the prefix-cache rule cost what it costs (`readme.dj`): a
+running prompt reads the edited turn, and the text it no longer says is not
+silently what it sees.
+
+## Redaction
+
+The world model supports redaction — a part of it can be taken out.
+
+Redaction is not an edit, and it sits against the continuity above. An edit
+records; a redaction destroys. The old value has to be *gone* rather than
+superseded, or the record is the wrong place to put anything that must not
+persist. So continuity can mean the history records *that* a redaction happened,
+never *what* was redacted.
+
+That reaches into copies. A fork holding the old bytes is still a place the value
+exists, so redaction and forking pull against each other — and the record cannot
+honour both unless a redaction reaches the forks too.

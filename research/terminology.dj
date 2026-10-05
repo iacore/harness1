@@ -3,10 +3,10 @@
 The words this project uses, and what they mean here. They are definitions, not
 descriptions: code, comments and documents use them with exactly these meanings.
 
-: agent
+: running prompt
 
-  A running prompt. An agent forks itself, or spawns a new agent, by assembling
-  that prompt; no other state passes between them.
+  The thing that runs. It forks, or spawns another, by assembling a prompt, and it
+  recalls experience from the world model rather than containing it.
 
 : prompt
 
@@ -17,7 +17,12 @@ descriptions: code, comments and documents use them with exactly these meanings.
 
   The last turn.
 
+: world model
+
+  The whole of what has been experienced — global, and unique as one. See
+  `research/agent-world.dj`.
+
 ## Constraints
 
-- Every harness1 agent on a machine shares a single Linux process group, so the
+- All harness1 processes on a machine share a single Linux process group, so the
   machine's whole set of running prompts can be signalled as one.

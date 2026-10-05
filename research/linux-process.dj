@@ -1,0 +1,323 @@
+# The process model
+
+How harness1's work is to be split across Linux processes, and the mechanisms
+each split rests on. The rule this serves is in `research/terminology.dj`: every
+harness1 running prompt on a machine shares a single Linux process group. The design here
+is a proposal; what exists in the tree is stated as such. The worked precedents
+are Kitty, tmux and Herdr; everything read from them is under `## KiTTY` and
+`## tmux and Herdr`. The turn model has its own file, `research/turns.dj`, and
+with it the omp2 precedent.
+
+## What exists now
+
+Nothing is split. `app/main.zig` prints the system prompt and exits, and the
+library's only concurrency is `src/curl.zig` spawning one thread per in-flight
+request. `setpgid`, `setsid`, `signalfd`, `waitpid` and `CLOEXEC` appear nowhere
+in the tree. So "a running prompt" is a conversation in a single process today, and the
+process-group rule holds vacuously because there is one process.
+
+## Roles are not start modes
+
+Two things get conflated when counting processes, and keeping them apart is what
+makes the count come out right.
+
+A *role* is what a process is: the server, a running prompt's own child, a client. A
+*start mode* is how one came to exist: launched attached to a terminal, detached
+from it, or joining a server that is already running. One role can arrive by
+several start modes, and a start mode that looks like a separate kind of process
+usually is not one.
+
+An running prompt is in neither list. It is a running prompt (`research/terminology.dj`) —
+not a process, and not a thread. Which process or thread carries one is
+implementation detail, and nothing in this document depends on the answer.
+
+The test is what the process ends up doing, not how it was launched. An
+invocation told to detach still becomes the server — that is the server's role
+reached by a different start mode. An invocation told to join an existing server
+does *not* become one: it is a client.
+
+## An invocation is a client; the server is separate
+
+Running `harness1` does one of two things, and the socket decides which:
+
+- A server is already answering on the socket → the invocation is a *client*.
+- Nothing is answering → the invocation *spawns* the server, and then becomes a
+  client itself.
+
+Either way the process in front of the user is the client, and the client is the
+user-facing side: it draws, reads keys, sends requests, owns the extensions, and
+modifies turns through the socket. It is disposable — nothing durable lives only
+in it — so killing it loses nothing and reattaching is free, the deal tmux and
+Herdr both offer.
+
+The server outlives every client and exits only when all running prompts are done working.
+Detaching is therefore not a shutdown; it is the normal case, and the server has
+to be started detached (`setsid`, no controlling terminal) so that closing the
+terminal does not `SIGHUP` it.
+
+## The server is the database
+
+The server owns the data, in memory and on disk. That is a component of the
+server itself, not an external dependency and not a separate process: the working
+set is in memory because the running prompt loop reads it constantly, and the durable half
+is what lets a restart resume instead of start over.
+
+One writer follows from that. Nothing else opens the store — a client modifies
+turns through the socket and the server applies them — so there is no second
+party to reconcile with and no lock to argue over.
+
+What the durable half *is* is still open, and it is the first question in
+`research/turns.dj`.
+
+## The socket is the lock, the rendezvous, and the liveness test
+
+One pathname unix socket does three jobs, so there is no pid file to go stale:
+
+- *Rendezvous* — clients `connect()` to it.
+- *Liveness* — the file existing proves nothing, because a crashed server leaves
+  it behind; only a successful `connect()` proves something is answering. That is
+  the test: `exists() && connect().is_ok()`.
+- *Lock* — the bind is the lock. `bind()` fails with `EADDRINUSE` when the path
+  is taken, so the process that binds is the server and every other one is a
+  client. A stale file fails the liveness test first, and is unlinked before the
+  bind.
+
+Two caveats. An abstract socket has no filesystem entry, so it cannot be the
+lock — this needs a pathname socket, which means a runtime directory
+(`$XDG_RUNTIME_DIR`) and a mode that keeps other users out. And
+test-then-unlink-then-bind is itself a race when two invocations start at once;
+the usual answer is to hold an `O_EXCL` lock file or a `flock()` across the whole
+sequence.
+
+## Where the turn model lives
+
+A prompt is every turn visible to the API, so a running prompt's whole state is its
+turns, and a running prompt is resumable exactly when those turns are reachable — which
+is what makes the client disposable and the server restartable. What a turn is,
+and how an abstract turn differs from a raw one, is `research/turns.dj`, and is
+not repeated here.
+
+## Mechanisms
+
+### The process group
+
+`setpgid(0, pgid)` in *both* the parent and the child immediately after `fork`,
+before `exec` — the double call is what closes the race where the child reaches
+`exec` before the parent has set its group. The server creates the group:
+`setsid` makes it a session and group leader and detaches from any controlling
+terminal; `setpgid(0, 0)` makes a group leader while staying in the session.
+
+A child inherits the group unless it calls `setsid` itself. An running prompt must not, or
+the shared group is lost at the first fork.
+
+### Session and terminal
+
+A process whose group is not the terminal's foreground group gets `SIGTTIN` when
+it reads the terminal and receives no `SIGINT` from it; `setsid` is stronger
+still, and `Ctrl-C` never reaches it. This is what makes the client a separate
+group from the fleet: the client is the UI and must be the terminal's foreground
+group, while the server and its running prompts are detached from the terminal entirely.
+A client is not a running prompt, so the single-group rule is untouched by that.
+
+### File descriptors
+
+`CLOEXEC` on everything except what is deliberately passed, which is the control
+socket alone. The better shape is to connect first and hand the *already
+connected* fd to the child, rather than a path for it to re-connect to; and never
+to pass a listening fd by inheritance, because the backlog comes with it.
+
+### Signals
+
+Mask the handled set in every thread and consume it from one `signalfd` in the
+server's loop, so no handler does real work. A workable set is `SIGINT`,
+`SIGHUP`, `SIGTERM`, `SIGCHLD`, `SIGUSR1`, `SIGUSR2`. `SIGCHLD` sets a flag and
+the loop then calls `waitpid(-1, &status, WNOHANG)` and reports what it reaped. A
+signal meant for one running prompt is delivered with `kill(pid, sig)`; one meant for the
+machine, with `killpg`.
+
+Between `fork` and `exec` the child must reset every handled signal to `SIG_DFL`
+and unblock the mask — a child that inherits the server's blocked set cannot be
+signalled normally. Only async-signal-safe calls belong in that window.
+
+### Resource limits
+
+- *cgroup v2* bounds the group's resources: `memory.max` and `pids.max` make the
+  kernel's OOM kill take this unit rather than the machine, `memory.events`
+  (`oom`, `oom_kill`) is the signal that it happened, `memory.peak` and
+  `memory.pressure` (PSI) are the readings to act on before it does, and
+  `cgroup.freeze` stops every task in the cgroup atomically — a stronger freeze
+  than `SIGSTOP` sent to a process group.
+- *`RLIMIT_AS`* per process makes overcommit honest: the allocation fails with a
+  real `ENOMEM` instead of the OOM killer arriving later. It counts every mapping
+  including thread stacks, so it needs the stack size fixed first.
+- *Stack size.* Zig's `Thread.SpawnConfig.default_stack_size` is 16 MiB per
+  thread, so 20 concurrent requests reserve roughly 320 MiB of address space
+  before a single body buffer. An explicit small stack is a prerequisite for
+  either limit above meaning anything.
+
+### Capacity is learned, not declared
+
+There is no fixed cap, and nothing is sized to one. Capacity is what the machine
+turns out to hold, discovered by running work until it fails and reading the
+error, rather than by declaring a bound in advance.
+
+The work item that reached the limit does *not* count within the capacity. So the
+learned capacity is one _less_ than the number of items in flight when the
+failure arrived: the item that hit the wall is the probe that found the edge, not
+a member of the set that fits. Capacity is therefore the largest set that all
+succeeded — a measurement, not a policy.
+
+That makes the *observability* of a limit the thing that matters, because a limit
+teaches nothing unless it reports. A thread that cannot be spawned fails with
+`ThreadQuotaExceeded`, naming the limit; an address-space cap fails the
+allocation with a real `ENOMEM`; a cgroup counts the kill in `memory.events`
+after the fact. A bound that ends in a `SIGKILL` with no counter — which is what
+overcommit produces — teaches nothing at all, which is why the sensors above are
+what make this measurable.
+
+## What may live where
+
+*The server* owns the process group id, the cgroup, the socket, the registry of
+running prompts, the database — the turns and their state, in memory and on disk — and the
+tools. It outlives everything else, so it holds what must not be lost. It can pick
+up tools added while it is running, without a restart; how that is done is
+implementation detail and does not belong here. A tool that returns — with an
+error or with a value — produces a result that becomes a turn for the running prompt; the
+only case this document has to reason about is a tool that crashes the process,
+and see `## What a tool can do to the process`.
+
+*The client* owns the UI and the extensions. An extension never reaches the
+server: the client applies it and sends the resulting turn modifications over the
+socket, so what crosses is the effect, not the extension. A shared-memory path
+between the two would be an optimisation, not a requirement — the socket is the
+interface of record.
+
+The client is disposable, and stays disposable because nothing durable lives only
+in it. The turns are the server's, and a client's modifications land there, so a
+client that dies takes nothing with it but its own unsent edits.
+
+## What a tool can do to the process
+
+A tool that returns — with an error or with a value — produces a result, and the
+result becomes a turn for the running prompt. There is nothing to isolate in that: the
+result is data, and whether it says error is the running prompt's business.
+
+The one case this document has to reason about is a tool that *crashes the
+process* — a panic, a segmentation fault, an abort. That takes the server with it,
+and no care at the call site recovers from it.
+
+So the question is not how to contain a crash but how likely one is, and the
+answer is the type system. While the checks are on, a tool has no null
+dereference, no out-of-bounds index, no silently wrapping integer, no uninitialised
+read and no access to an inactive union field, so the silent-corruption class is
+gone and most memory bugs become a loud panic instead.
+
+Four things bound how far that reaches:
+
+- *A panic is terminal.* `std.debug.FullPanic` lowers every safety check to a
+  `noreturn` call (`outOfBounds`, `unwrapError`, `sentinelMismatch`,
+  `inactiveUnionField`, and the rest), so a handler can log and exit but cannot
+  resume. The type system gives detection, not containment.
+- *The guarantees are the checks.* `ReleaseFast` and `ReleaseSmall` remove
+  runtime safety, and the bug that panicked in `ReleaseSafe` becomes silent
+  wrongness again. Relying on the type system means shipping the binary that
+  hosts tools as `safe` — or `debug`.
+- *Types bound neither time nor quantity.* An endless loop and an unbounded
+  allocation are both untouched by the type system, and Zig cannot kill a thread
+  to end the first. A capped allocator can bound the second; nothing in the
+  language bounds the first.
+- *The guarantee is a property of the code, not the language.* `@ptrFromInt`, an
+  `unreachable` on a path the model can steer, or a single
+  `@setRuntimeSafety(false)` anywhere in a tool reopens the hole, so the tool API
+  has to keep those out of reach.
+
+What makes a rare crash affordable is where turns live (`research/turns.dj`): a
+server that dies loses the in-flight turn, not the session, because the session is
+already durable. That is what turns "loud and fatal" into something a fleet can
+live with.
+
+## KiTTY
+
+Read from the clone at `~/computing/graphical/kitty`. Kitty is a terminal
+emulator, so its job is the opposite of this one — it *isolates* every child —
+but the shape of its process set is the worked example above.
+
+*Roles.*
+
+- *The boss* (`kitty/boss.py`, 4137 lines) — one per kitty instance, owning every
+  OS window and tab, the GPU context, the sockets, and the child monitor.
+- *A child* — a shell or program, one per window or tab, `fork`ed in
+  `kitty/child.c` and given its own session, process group and PTY with
+  `setsid()` followed by `ioctl(TIOCSCTTY)`.
+- *A child's descendants* — whatever is run inside a window; kitty reads their
+  cwd, cmdline, environ, memory and process groups, but does not own them.
+- *A kitten* — a separate program, of which `kitten @` is a client of a boss.
+
+The child monitor is not a process: `child-monitor.c` runs its `io_loop` and
+`talk_loop` as `pthread_create` threads inside the boss, which is why no seventh
+process handles `SIGCHLD`.
+
+*Start modes, and the role each lands in.*
+
+- *The launcher* (`kitty/launcher/main.c`) is the `kitty` binary, and it does not
+  linger: it parses the command line, sets up the socket, and `execv`s into the
+  Python program (`:358`), so the launcher *becomes* the boss.
+- *`--detach`* — becomes a boss. The launcher forks; the parent waits on a pipe
+  until the child has called `setsid()` and then exits, so the child is not killed
+  by a `SIGHUP` when the parent's terminal goes away (`:474-492`). stdin goes to
+  `/dev/null`, stdout and stderr to `--detached-log` or `/dev/null`.
+- *`--start-as=hidden`* — becomes a boss whose first OS window is hidden: a
+  server.
+- *`-1` / `--single-instance`* — with a boss already running this does *not*
+  become one: the launcher connects to the boss's socket, sends
+  `{'cmd': 'new_instance', 'args': […], 'environ': …}`, and exits. With no boss
+  running, it becomes the boss.
+- *`kitty --replay-commands`* — `kitty/client.py`, which despite the name is a
+  replayer of a `--dump-commands` log and no kind of client at all.
+
+*The single-instance socket* (`kitty/launcher/single-instance.c`) is an abstract
+unix socket on Linux and a file elsewhere, created under a lock file with mode
+0600, with the peer uid verified at *both* ends because abstract sockets are
+visible to every process on the box. The connected fd reaches the Python process
+through the environment as `KITTY_SI_DATA`, and the client may bind a second
+socket so the boss can tell it when the window it opened dies
+(`notify_on_os_window_death`).
+
+*Signals* are `SIGINT, SIGHUP, SIGTERM, SIGCHLD, SIGUSR1, SIGUSR2`, masked in
+every thread and consumed from one `signalfd`.
+
+*Capacity* is declared rather than learned, which is the opposite of harness1's
+rule: `#define MAX_CHILDREN 512` (`kitty/data-types.h:157`) sizes the child
+array, the pollfd array, the GPU buffers and the OS-window count, and adding one
+past it is refused outright.
+
+## tmux and Herdr
+
+Read from `man tmux` on this machine and from the Herdr checkout at
+`~/computing/terminal/herdr`. Both are multiplexers with a long-lived server and
+disposable clients, which is the model harness1 is taking.
+
+*tmux.* The server socket lives in a directory under `TMUX_TMPDIR`, or `/tmp`
+when that is unset, named `tmux-UID` and required not to be world readable,
+writable or executable. `-L socket-name` picks the socket (default `default`),
+which is what lets several independent tmux servers run; `-S socket-path` gives a
+full path instead and ignores `-L`. If the socket is removed by accident,
+`SIGUSR1` to the server recreates it — the server is the owner of the rendezvous,
+not a client that happens to hold it.
+
+*Herdr.* A Rust multiplexer for coding agents, with its own server, sessions,
+workspaces, tabs and panes. The socket path can be overridden with
+`HERDR_SOCKET_PATH`; sessions are named (`herdr session attach <name>`) and
+stopped with `herdr server stop`, which is documented as also stopping the pane
+processes. Its tests are the architecture in miniature — `server_headless.rs`,
+`multi_client.rs`, `detach_reattach.rs`, `live_handoff.rs`, `client_mode.rs` —
+and its test helpers decide whether a server is live with exactly the shape above:
+
+```rust
+if path.exists() && UnixStream::connect(path).is_ok() {
+```
+
+A pane's agent is tracked through a status the server owns — `idle`, `working`,
+`blocked`, `done`, `unknown` — which is the state harness1's server needs in order
+to know that all running prompts are done and it may exit.
+

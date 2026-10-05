@@ -1,0 +1,141 @@
+# Online Network Database Manager
+
+This file is technical only. It does not touch on the theoretical experience that agents have.
+
+The database component the server owns: the data on disk and in memory, as one
+thing rather than two. It is ours, not an embedded engine. Three premises shape
+the format.
+
+## The kernel never crashes
+
+A `write(2)` that returns has its bytes in the page cache, and the kernel will
+write them out. A process that dies and is restarted sees them. So *process-crash
+durability needs no `fsync`* and no direct-I/O dance — the syscall returning is
+enough.
+
+What this does not remove is the process dying at an arbitrary instruction, so
+the format has to tolerate a *torn tail*: a record half-written when the
+process was killed. That is the one crash case that remains, and it is a
+formatting problem rather than a durability one.
+
+## Corruption is local
+
+A corrupted unit must not take the rest with it. This decides the format more
+than the other two premises:
+
+- *Frame every unit* — length-prefixed or fixed-size — so a unit's extent is
+  knowable without reading what precedes it.
+- *Checksum every unit*, header and payload. Without it, corruption is silent
+  wrongness; with it, it is a detected miss that can be skipped.
+- *No whole-file index.* If finding anything requires one global block, then one
+  bad block loses the store. Chunk the index and make it rebuildable from the
+  data, or replicate it.
+- *Append-mostly, and truncate the tail on open.* The torn last record is the
+  common case, not the exotic one, so recovery is dropping it and carrying on.
+- *Recover per unit, not per open.* Opening skips bad units and reports them; it
+  never fails the file, or one bad block makes everything unusable — which is
+  exactly the non-local impact being ruled out.
+
+The pairing that makes this cheap: no `fsync` and per-unit checksums together
+give up the guarantee between writes and get it back per record.
+
+## Compaction happens at the edges
+
+On-disk data is compacted when the server starts and when it stops — never in the
+middle.
+
+Between those edges the writer only appends, so a running server has a single
+writer and nothing to coordinate. A compaction in the middle would move units that
+readers are using, and that is exactly where a fault stops being local: the same
+bytes would mean two things depending on when they were read. At an edge there is
+no one to confuse — the server is starting, or it is finished.
+
+## Persistent and in-memory are one thing
+
+The in-memory structure *is* the model and the file is a rendering of it, so the
+format question is how to write that structure down and read it back, not how to
+design a schema on disk. Reads are pointer-chases; durability is an output.
+
+## One file per running prompt, forked with it
+
+This was written before the world model was fixed as global and unique as one
+(`research/agent-world.dj`). If there is a single record, a fork cannot be a copy
+of a whole file belonging to one prompt, and the question below is what has to be
+re-answered rather than the layout being chosen from it.
+
+A candidate layout: one file per running prompt, and a fork *copies* it, so the fork's file
+is its parent's as of that moment and the two diverge independently afterwards.
+
+It fits everything above — each file has a single writer, compaction stays at the
+edges, and a fork costs a copy rather than a rewrite. It also gives the fork
+something the turn model wants: the new running prompt begins with its parent's turns in
+place, not with a reference it has to chase on every read.
+
+What it does not give is the other direction. Running prompts have to be able to reference
+each other's turns (`research/turns.dj`), and a copy is a snapshot — a reference
+into the original's *later* turns cannot be answered from the fork's copy. So
+either a reference always resolves against the file it names, whichever file the
+reader forked from, or the fork is not a copy at all but a shared file that
+separates only when written.
+
+## Schema evolution and mutability
+
+Two requirements that rule out the simple shapes.
+
+*Every record carries its own version.* A turn's shape follows the tool set, so a
+record has to say what it is — a tag and a version — and a reader decodes the tags
+it knows and skips the ones it does not. Nothing is decoded by position and no
+reader assumes a fixed layout, or every schema change becomes a migration of every
+record instead of a new tag. This is what keeps evolution cheap: old records stay
+readable as they are, and only derived data (an index, a cache) ever needs
+rebuilding.
+
+*Turns are mutable*, so the file is append-mostly rather than write-once.
+Rewriting a variable-length record in place is where locality of corruption is
+lost: a partial rewrite leaves a record that is neither the old value nor the new
+one, and no checksum can say which half survived. An update therefore writes a
+*new* payload elsewhere and then publishes it with a single store, so a reader
+sees either the old record or the new one and never a mixture. The old payload is
+garbage until the edge — which is the second reason compaction lives at the edges
+rather than mid-life, and the reason it must not run while readers hold pointers.
+
+## What the kernel already provides
+
+A file is an abstraction, and the thing underneath it here is the page cache.
+`mmap` with `MAP_SHARED` is the interface to it: the mapped region *is* memory,
+stores to it are loads and stores, and the kernel is the writer. Given that the
+kernel never crashes, a store that has happened is durable — no `msync`, no
+`fsync`, no write syscalls. That is as close to a persistent in-memory data
+structure as Linux gets without hardware.
+
+What else is on the table, and what this machine actually has:
+
+- *tmpfs, `shm_open`, `memfd_create`* — a file object that is memory and can be
+  shared, but not persistent: it dies with the last reference or the reboot.
+  `/tmp` and `/run` here are tmpfs, so a runtime-directory file is one of these,
+  and durable data cannot live there.
+- *Persistent memory (DAX)* — `mmap` on a pmem device gives load/store access with
+  no page cache, and `MAP_SYNC` makes a store durable without `msync`. This
+  machine has none: no `/dev/pmem*`, no `nd` bus.
+- *hugetlbfs and `MADV_HUGEPAGE`* — larger pages for the mapping. It buys TLB
+  reach, not persistence. No hugetlbfs is mounted; tmpfs here is `huge=advise`.
+- *Pinned eBPF maps* (`BPF_F_MMAPABLE` on bpffs) — a kernel-owned structure that
+  outlives the process and can be mapped. Real, but fixed-size arrays only rather
+  than a general store, and bpffs is not mounted here.
+- *A raw block device* — you would own the layout and lose the page cache, which
+  is the part doing the work.
+- *`FICLONE` (reflink)* — not a store, but the root filesystem here is btrfs, so
+  copying a file is O(1) and diverges copy-on-write. That is exactly the cheap
+  fork the section above was looking for.
+
+So the shape to build on is `MAP_SHARED` on a btrfs file: pointer-addressable,
+kernel-written, and cheap to fork. Two consequences follow. The kernel offers no
+per-unit integrity, so "corruption is local" is entirely our own checksums over
+our own layout. And a record is written by a sequence of stores rather than one
+syscall, so a torn tail is a sequence that stopped — which the checksum and the
+truncate-on-open already cover.
+
+## What this holds
+
+The turns and their state (`research/turns.dj`) are the payload, so the durable
+form of a turn is this component's question rather than the turn model's.

@@ -1,0 +1,166 @@
+# Errors
+
+Every error the harness can produce, by layer, with where it comes from. This is
+a catalogue and nothing more: what is *done* about each one is in the code and
+only there, so this file can be read to learn the failure surface without
+reading the same decisions twice.
+
+## Allocation
+
+- *OutOfMemory* — `std.mem.Allocator.Error`, reachable at every allocation in
+  the library, and separately as libcurl's own `CURLE_OUT_OF_MEMORY` (27).
+
+## Process and thread
+
+`std.Thread.SpawnError`, raised when `src/curl.zig` spawns the thread that runs a
+transfer:
+
+- *ThreadQuotaExceeded* — a limit on the number of threads: the `RLIMIT_NPROC`
+  soft limit, `/proc/sys/kernel/threads-max`, `/proc/sys/kernel/pid_max`, or a
+  cgroup `pids.max`. This is the EAGAIN of `pthread_create(3)`.
+- *SystemResources* — the kernel could not allocate the task structure or copy
+  the caller's context; the ENOMEM of `clone(2)`.
+- *OutOfMemory* — userland memory for the new thread's stack.
+- *LockedMemoryLimitExceeded* — `mlockall` is in force and the thread's memory
+  would exceed the lockable limit.
+- *Unexpected* — anything else the platform reports.
+
+## Transport
+
+`src/curl.zig`. A request that produces no response ends in exactly one of six
+states:
+
+- *setup_failed* — nothing was sent: libcurl was not started, no easy handle or
+  thread could be had, an option was rejected, or a POST had no body.
+- *endpoint_broken* — `require_h2` was set and the connection negotiated a
+  protocol other than HTTP/2.
+- *connect_failed* — the transfer failed before any response header: name
+  resolution, TCP, TLS, or the connect bound.
+- *transfer_failed* — the transfer failed after the response started.
+- *cancelled* — `Response.deinit` stopped the transfer before it finished.
+- *out_of_memory* — an allocation failed here or inside libcurl.
+
+Below those sit libcurl's own codes. Each carries libcurl's `CURLcode`, its
+`curl_easy_strerror` description, and whatever it put in the error buffer; a
+request log line holds all three. The codes this configuration can reach, as
+numbered in libcurl 8.22.0's `curl.h`:
+
+| code | name | what it reports |
+| --- | --- | --- |
+| 1 | CURLE_UNSUPPORTED_PROTOCOL | the URL scheme is not supported |
+| 3 | CURLE_URL_MALFORMAT | the URL could not be parsed |
+| 6 | CURLE_COULDNT_RESOLVE_HOST | name resolution failed |
+| 7 | CURLE_COULDNT_CONNECT | the TCP connect failed |
+| 16 | CURLE_HTTP2 | a problem in the HTTP/2 framing layer |
+| 18 | CURLE_PARTIAL_FILE | the transfer ended short of the expected size |
+| 23 | CURLE_WRITE_ERROR | a write callback returned short — here, one of ours aborting |
+| 27 | CURLE_OUT_OF_MEMORY | libcurl could not allocate |
+| 28 | CURLE_OPERATION_TIMEDOUT | a bound was reached, such as the low-speed stall bound |
+| 35 | CURLE_SSL_CONNECT_ERROR | the TLS handshake failed |
+| 42 | CURLE_ABORTED_BY_CALLBACK | the progress callback returned non-zero |
+| 52 | CURLE_GOT_NOTHING | the server closed without replying |
+| 55 | CURLE_SEND_ERROR | sending data failed |
+| 56 | CURLE_RECV_ERROR | receiving data failed |
+| 60 | CURLE_PEER_FAILED_VERIFICATION | the certificate did not verify |
+| 61 | CURLE_BAD_CONTENT_ENCODING | an unrecognized content encoding |
+| 92 | CURLE_HTTP2_STREAM | an HTTP/2 stream error |
+
+`CURLE_TOO_MANY_REDIRECTS` (47) is defined but unreachable: redirects are not
+followed.
+
+## Reading a body
+
+`std.Io.Reader.StreamError`, from the reader `Response.reader` returns:
+
+- *ReadFailed* — the body ended with a recorded transport failure.
+- *WriteFailed* — the destination writer refused bytes.
+- *EndOfStream* — the body ended.
+
+## The API answering with an error
+
+`APIError`, in both clients — a non-2xx status. It carries the status code, and
+the retry advice the response gave (`retry-after`, `retry-after-ms`,
+`x-should-retry`). Its `Form` records which body shape was read:
+
+- *envelope* — `{error:{message,type,param,code}}`
+- *engine* — `{object:"error",message,type,param,code:<int>}`, the engine's raw
+  passthrough
+- *plain* — neither; the body is kept verbatim as `message`
+
+## Reading a response body as JSON
+
+`Response.parse` delegates to `std.json`, so its error set is reachable from
+`models.list`, `models.retrieve`, `chat.send` and their deepseek equivalents:
+syntax errors, unexpected tokens, missing and duplicate fields, integer overflow,
+plus `OutOfMemory`.
+
+## Decoding a stream
+
+`EventStream.ReadError`, the same five in both clients:
+
+- *UnexpectedEof* — the response was interrupted, or the body ended without the
+  `[DONE]` sentinel.
+- *MalformedChunk* — an event did not decode as a chunk of that endpoint.
+- *ReadFailed* — the connection failed; the response body's own error carries
+  the cause.
+- *StreamTooLong* — an event line did not fit in the reader's buffer.
+- *OutOfMemory* — an event's parse, or the accumulator, could not allocate.
+
+## A request the client refuses to send
+
+The client's top-level `Failure` (`src/remote/lithos.zig`) is a union of the
+transport states above, `APIError`, one of these, or *stream_requested* — the
+request asked for streaming through the non-streaming entry point.
+
+`chat.Invalid`, a wire bound the request breaks, with the value that explains it:
+*model_required*, *messages_required*, *reasoning_budget_out_of_range: f64*,
+*max_tokens_out_of_range: i64*, *temperature_out_of_range: f64*,
+*top_p_out_of_range: f64*, *presence_penalty_out_of_range: f64*,
+*frequency_penalty_out_of_range: f64*, *n_out_of_range: i64*,
+*top_logprobs_out_of_range: i64*, *logprobs_required*, *empty_stop_sequence*,
+*stream_options_require_stream*.
+
+The deepseek client carries its own `Invalid` for chat — *model_required*,
+*messages_required*, *message_content_required: usize*,
+*text_part_required: usize*, *image_url_required: usize*,
+*image_url_too_long: usize*, *part_not_allowed_for_role: usize*,
+*prefix_only_on_last_message*, *prefix_requires_content*,
+*tool_call_id_required: usize*, *tool_call_id_unknown: []const u8*,
+*tool_call_id_reused: []const u8*, *tool_call_type_unsupported: []const u8*,
+*tool_call_name_required: usize*, *max_tokens_out_of_range: i64*,
+*temperature_out_of_range: f64*, *top_p_out_of_range: f64*,
+*top_logprobs_out_of_range: i64*, *logprobs_required*,
+*too_many_stop_sequences: usize*, *empty_stop_sequence*,
+*stream_options_require_stream*, *tool_name_required: usize*,
+*tool_name_invalid: usize*, *tool_name_reused: []const u8*,
+*tool_choice_function_invalid: []const u8*,
+*tool_choice_function_in_thinking_mode*,
+*tool_choice_required_in_thinking_mode*, *reasoning_replay_required: usize*,
+*user_id_invalid* — and one for FIM: *model_required*, *prompt_required*,
+*echo_with_suffix*, *echo_with_logprobs*, *logprobs_out_of_range: i64*,
+*max_tokens_out_of_range: i64*, *too_many_stop_sequences: usize*,
+*empty_stop_sequence*, *temperature_out_of_range: f64*, *top_p_out_of_range: f64*,
+*stream_options_require_stream*.
+
+Two more live only in deepseek's `Failure`, for endpoints that exist solely under
+its Beta root: *strict_tools_require_beta*, *prefix_completion_requires_beta*,
+*beta_required*.
+
+## Serializing a request
+
+`json_encoder.Error`:
+
+- *DepthTooDeep* — the value nests past the encoder's limit.
+- *NotFinite* — a float JSON cannot carry.
+- *Io.Writer.Error* — the destination refused the bytes.
+
+## Credentials
+
+A client built with a key that is empty or only whitespace reports
+*ApiKeyRequired* (`InitError`). The key lookup itself returns `null` rather than
+an error when the store or its helper is unusable, reporting to its logger
+instead; *OutOfMemory* is the one error it returns.
+
+## Reported, not returned
+
+`debug.zig`'s sink drops a write that fails — it has nowhere to report it.

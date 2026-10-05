@@ -1,0 +1,100 @@
+# Turns
+
+What a turn is, and what a running prompt's turns are made of. The store's own shape —
+in memory, a graph, a table — is implementation detail and does not belong here.
+This file is the model the code sees. What it describes is the world model, which
+is `research/agent-world.dj`.
+
+## Abstract turns and raw turns
+
+A turn has two faces, and they are different things rather than two views of one:
+
+- The *raw turn* is what the API sees: the text that goes into a request.
+- The *abstract turn* is what our code sees: the raw turn plus everything that
+  must not be rendered.
+
+The split is load-bearing rather than cosmetic. The fish tool keeps its
+resume-ids in tool-result turns, and when a session is resumed from disk the
+shell is gone — so the resume-id must never reach the raw text, where it would
+assert a process that no longer exists. It stays in the abstract turn, inert
+until something can use it.
+
+Anything host-side or session-side that a tool needs to remember belongs there,
+on the abstract side, for the same reason: the raw turn has to stay a truthful
+record of what was said to the model.
+
+## The running prompt's view is a list
+
+An running prompt sees its own turns as a list, in order. Nothing about the store changes
+that — the list is the view, and the store sits behind it.
+
+Two things sit outside the plain list, and both are explicit rather than implied
+by adjacency between turns:
+
+- *A reference turn* — a turn whose content is a reference to another range of
+  turns. That is how work is reused, and how a fork points at what it came from.
+  Reading a fork's turns directly is a meta operation (omp's `/tan`), not the
+  ordinary reading of a conversation.
+- *Turn state*, held apart from everything else. omp bundles turn state with
+  non-turn state into one session; harness1 does not. A turn's state is a
+  property of that turn, not of the session it happens to sit in.
+
+## Tool state lives on turns
+
+Where a tool needs state, it goes on the turn-state side: a tool-result turn
+carries what that call left behind. The fish tool's resume-ids are the worked
+example — they are per-call, they matter only while that call's result matters,
+and they should die with the resume rather than outliving it in the session.
+
+## Turns are mutable
+
+A turn that has been written is not frozen. The client modifies turns through the
+socket, and a resumed session can change what a turn says. That is deliberate: the
+project busts the prefix cache rather than let a running prompt read a turn that no longer
+says what it said (`readme.dj`).
+
+Mutation changes what a turn says, not where it sits. The list keeps its length
+and its order, so nothing that referred to a position has to be renumbered.
+
+## The schema cannot be fixed
+
+A turn's shape follows the tool set, which changes while the running prompt is running, so
+the shape of a turn is not knowable in advance. Whatever holds a turn has to
+carry a self-describing shape, and *rendering* that shape produces the raw turns
+the API sees. The rendering is a derivation, never the storage format.
+
+## omp2
+
+Read from the sibling checkout at `~/computing/running prompt-harness/omp2`, which is the
+precedent for this part rather than for the process model. `crates/dom` describes
+itself as the *"authoritative materialized session tree and deterministic patch
+engine"*, and its own module list is the design in nine words: `arena`, `node`,
+`op`, `selector`, `snapshot`, `stream`, `subscribe`, `txn`. That decomposes as:
+
+- The session *is* a tree of nodes in an arena — `Node`, `NodeSpec`, `Value` —
+  not a list of messages.
+- Change arrives as ops (`Op`, `StreamOp`) applied in a transaction (`Txn`), and
+  application is deterministic (`Applied`), so the same ops always give the same
+  tree.
+- Subscribers get `Event` and `Patch` instead of re-reading, which is what lets
+  several clients watch one tree without polling.
+- `Snapshot` is the durable form, and `journal` is a *separate crate* —
+  durability is a distinct concern from the tree itself.
+- Tags and properties are named rather than typed (`KnownTag`, `Tag`, `PropId`,
+  `PropKey`), which is what makes an unfixed schema expressible at all: a new
+  tool adds a tag, not a migration.
+
+Two differences for harness1. omp2 materializes a tree *per session* and bundles
+turn state with the rest of the session, while harness1 keeps each running prompt's own
+turns as a list, expresses reuse with a reference turn, and holds turn state
+apart. And its rendering to raw turns is a derivation from the tree, never the
+storage format itself.
+
+## Reference turn
+
+TK
+
+## Durability
+
+What makes the turns durable is the database component's business, not the turn
+model's — see `research/persistence.dj`.
