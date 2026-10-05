@@ -1,5 +1,11 @@
 # AGENTS.md
 
+## Be precise over cheap
+
+We will rather bust the prefix cache rather than let a running prompt see stale data. a hit is an
+optimisation; a turn that no longer says what it said is a lie. the miss is
+deliberate, and it is bounded by where the edit is — see `research/prompt-cache.dj`.
+
 ## Some words are defined in `research/terminology.dj`
 
 `research/terminology.dj` fixes what `agent`, `prompt` and `last prompt` mean
