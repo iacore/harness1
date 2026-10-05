@@ -20,6 +20,7 @@
         "build.zig.zon",
         "COPYING.md",
         "src/root.zig",
+        "src/world.zig",
         "src/curl.zig",
         "src/curl_shim.c",
         "src/json_encoder.zig",

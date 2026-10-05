@@ -281,7 +281,10 @@ the encoding rather than the typing question above:
 The doc's own rule from the protobuf section — binary for interchange, text for
 humans only — already rules out JSON or Ion as the store under either spine; as
 an export format they are unconstrained. Which spine this is decides everything
-downstream and is not yet decided.
+downstream, and the first is the one taken: `src/world.zig` maps a file
+`MAP_SHARED`, its first four words a header (magic, version, used, root), `Ref` a
+`u64` byte offset into the mapping, and the open-time check a structural scan of
+that image rather than a decode into Zig types.
 
 ## What this holds
 

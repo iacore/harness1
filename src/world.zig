@@ -1,13 +1,18 @@
-//! The world: one Ion-shaped value graph addressed by offset.
+//! The world: one Ion-shaped value graph addressed by offset, held in a file
+//! mapped `MAP_SHARED`.
 //!
 //! Values live in a flat byte region and name one another by byte offset
-//! (`Ref`) from its start, never by pointer. The region is fixed for the
-//! world's life, so an offset — and a slice into the region — is stable. The
+//! (`Ref`) from its start, never by pointer. The region is a file mapped
+//! `MAP_SHARED`: the mapping *is* memory — a store to it is a load or store and
+//! the kernel is the writer — and it neither moves nor dies with the process,
+//! so an offset, and a slice into the region, is stable across processes. The
 //! top level is a single Ion struct.
 //!
-//! Power-safe overwrite. This module *assumes* the backing region is power-safe
-//! on overwrite: a store to an aligned location lands entirely or not at all,
-//! even if power is lost mid-store. The update discipline follows:
+//! Durability without `fsync`. A store that has landed is in the page cache,
+//! and the kernel, which does not crash, writes it out, so a process killed at
+//! any instruction sees it on reopen (`research/persistence.dj`). What that
+//! leaves is a torn tail — a sequence of stores interrupted — and the update
+//! discipline answers it:
 //!
 //!   * an existing struct field is updated in place, with one store of its
 //!     `Ref`, so a reader sees the old value or the new one and never a mixture;
@@ -15,15 +20,16 @@
 //!     and publishes it with one `Ref` store, so no live node is ever rewritten
 //!     in part.
 //!
-//! There is therefore no journal, no undo log, and no torn-tail recovery. The
-//! assumption is not a property of any particular device — it is what a
-//! word-sized aligned store does on the hardware this targets — and it is the
-//! one thing the design gives up in exchange for that simplicity.
+//! There is therefore no journal and no undo log. The remaining assumption is
+//! that a store to an aligned word lands entirely or not at all — what the
+//! hardware this targets does; write ordering across a power loss is not
+//! addressed. The image's own header makes a reopen decode what this build
+//! knows and refuse a version it does not.
 //!
 //! Bugs are excluded by three means, not by testing alone: a `@"struct"` and a
 //! `symbol` have their own handle types (`StructRef`, `SymbolRef`), so an
 //! operation cannot be applied to the wrong kind — it will not compile; a tag
-//! is stored as a plain byte and decoded with `intToEnum`, so a corrupt tag is
+//! is stored as a plain byte and decoded with `tagFromByte`, so a corrupt tag is
 //! a returned error and never a `switch` on an invalid enum value; and
 //! `validate` walks the reachable graph and reports any structural fault, so
 //! the invariant is executable and can be asserted after every operation.
@@ -33,7 +39,7 @@ const Allocator = std.mem.Allocator;
 
 /// A byte offset from the start of the region. `none` is no value. A `Ref` is
 /// only produced by the constructors below; a raw integer is not a `Ref`.
-pub const Ref = u32;
+pub const Ref = u64;
 pub const none: Ref = 0;
 
 /// Handles that carry their kind, so the struct and symbol operations cannot be
@@ -98,6 +104,7 @@ pub const Fault = error{
     BadFieldName, // a struct member's name is not a symbol
     TooDeep, // the graph is deeper than the walk allows
     OutOfSpace, // the region cannot hold the write
+    BadImage, // the region's length, magic, or version is not one this build knows
 };
 
 fn structHandle(r: Ref) StructRef {
@@ -119,34 +126,49 @@ fn symbolHandle(r: Ref) SymbolRef {
     return @enumFromInt(r);
 }
 
-/// The flat byte region. Allocated once at the world's capacity and never
-/// moved, so offsets and slices stay valid for its life.
+/// The region's first bytes are its header: four machine words that say what
+/// the image is, so a reopen decodes what this build knows and refuses a version
+/// it does not (`research/persistence.dj`). Node offsets begin past it.
+const header_bytes = 32;
+const magic: u64 = 0x574f524c445f5631; // "WORLD_V1", big-endian bytes
+const version: u64 = 1;
+const word_magic = 0;
+const word_version = 1;
+const word_used = 2;
+const word_root = 3;
+
+/// The flat byte region, seen as words. It is the file mapping; this type
+/// neither allocates nor frees it, and its state lives in the header words
+/// rather than in any Zig field, so it survives the process that wrote it.
 const Loam = struct {
-    gpa: Allocator,
     words: []u64,
-    used: usize = 8, // offset 0 is reserved as `none`
-
-    fn init(gpa: Allocator, capacity: usize) !Loam {
-        const words = try gpa.alloc(u64, @max(1, (capacity + 7) / 8));
-        @memset(words, 0);
-        return .{ .gpa = gpa, .words = words };
-    }
-
-    fn deinit(self: *Loam) void {
-        self.gpa.free(self.words);
-        self.words = &.{};
-    }
 
     fn base(self: *Loam) [*]u8 {
         return @ptrCast(self.words.ptr);
     }
 
+    fn used(self: *Loam) usize {
+        return @intCast(self.words[word_used]);
+    }
+
+    fn setUsed(self: *Loam, v: usize) void {
+        self.words[word_used] = v;
+    }
+
+    fn root(self: *Loam) Ref {
+        return self.words[word_root];
+    }
+
+    fn setRoot(self: *Loam, r: Ref) void {
+        self.words[word_root] = r;
+    }
+
     fn alloc(self: *Loam, n: usize) Fault!Ref {
         const aligned = (n + 7) & ~@as(usize, 7);
-        const need = self.used + aligned;
-        if (need > self.words.len * 8) return error.OutOfSpace;
-        const off = self.used;
-        self.used = need;
+        const off = self.used();
+        const need = off + aligned;
+        if (need > self.words.len * @sizeOf(u64)) return error.OutOfSpace;
+        self.setUsed(need);
         return @intCast(off);
     }
 
@@ -167,17 +189,79 @@ const Loam = struct {
 
 pub const World = struct {
     gpa: Allocator,
+    io: std.Io,
+    file: std.Io.File,
+    mapping: []align(std.heap.page_size_min) u8,
     loam: Loam,
-    root: StructRef,
 
-    pub fn init(gpa: Allocator, capacity: usize) !World {
-        var self = World{ .gpa = gpa, .loam = try Loam.init(gpa, capacity), .root = undefined };
-        self.root = try self.makeStruct(&.{});
+    /// Open the world at `path`, creating the file if it is absent. A file that
+    /// holds no image is sized to `capacity`; a file that holds one is resumed
+    /// at its own length, so `capacity` applies only to a fresh world. The file
+    /// is mapped `MAP_SHARED`: the mapping is the world, and a store to it
+    /// outlives the process that made it.
+    pub fn open(gpa: Allocator, io: std.Io, path: []const u8, capacity: usize) !World {
+        const file = try std.Io.Dir.cwd().createFile(io, path, .{ .read = true, .truncate = false });
+        errdefer file.close(io);
+
+        const length = try file.length(io);
+        const size = if (length == 0) blk: {
+            try file.setLength(io, capacity);
+            break :blk capacity;
+        } else length;
+        if (size < header_bytes or size % @sizeOf(u64) != 0) return error.BadImage;
+
+        const mapping = try std.posix.mmap(
+            null,
+            @intCast(size),
+            .{ .READ = true, .WRITE = true },
+            .{ .TYPE = .SHARED },
+            file.handle,
+            0,
+        );
+        errdefer std.posix.munmap(mapping);
+
+        var self = World{
+            .gpa = gpa,
+            .io = io,
+            .file = file,
+            .mapping = mapping,
+            .loam = .{ .words = std.mem.bytesAsSlice(u64, mapping) },
+        };
+        try self.openImage();
         return self;
     }
 
     pub fn deinit(self: *World) void {
-        self.loam.deinit();
+        std.posix.munmap(self.mapping);
+        self.file.close(self.io);
+        self.* = undefined;
+    }
+
+    /// A blank region carries no header: stamp one and make the empty root. A
+    /// region that already holds an image must carry this build's magic and
+    /// version, and its graph must pass the structural scan before it is served
+    /// — skirting either would serve a graph this code cannot read.
+    fn openImage(self: *World) !void {
+        if (self.loam.words[word_magic] == 0) {
+            self.loam.words[word_magic] = magic;
+            self.loam.words[word_version] = version;
+            self.loam.setUsed(header_bytes);
+            self.loam.setRoot(none);
+            self.setRoot(try self.makeStruct(&.{}));
+            return;
+        }
+        if (self.loam.words[word_magic] != magic or self.loam.words[word_version] != version) {
+            return error.BadImage;
+        }
+        try self.validate();
+    }
+
+    fn setRoot(self: *World, r: StructRef) void {
+        self.loam.setRoot(@intFromEnum(r));
+    }
+
+    fn rootRef(self: *World) StructRef {
+        return @enumFromInt(self.loam.root());
     }
 
     // ── liveness ────────────────────────────────────────────────────────────
@@ -186,9 +270,9 @@ pub const World = struct {
     /// cannot tell a node start from the middle of another node's payload; that
     /// is what `validate` is for.
     pub fn alive(self: *World, r: Ref) bool {
-        if (r == none) return false;
+        if (r == none or r < header_bytes) return false;
         if (r % @sizeOf(u64) != 0) return false;
-        return @as(usize, r) + @sizeOf(Node) <= self.loam.used;
+        return r + @sizeOf(Node) <= self.loam.used();
     }
 
     fn tagAt(self: *World, r: Ref) Fault!Tag {
@@ -341,7 +425,7 @@ pub const World = struct {
         if (!self.alive(r)) return null;
         const n = self.loam.node(r).*;
         const end = @as(usize, @intCast(n.a)) + @as(usize, @intCast(n.b));
-        if (end > self.loam.used) return null;
+        if (end > self.loam.used()) return null;
         return self.loam.bytes(@intCast(n.a), @intCast(n.b));
     }
 
@@ -446,15 +530,15 @@ pub const World = struct {
     // ── read/write on the world's root struct ───────────────────────────────
 
     pub fn getField(self: *World, name: []const u8) ?Ref {
-        return self.get(self.root, name);
+        return self.get(self.rootRef(), name);
     }
 
     pub fn putField(self: *World, name: []const u8, value: Ref) Fault!void {
-        self.root = try self.put(self.root, name, value);
+        self.setRoot(try self.put(self.rootRef(), name, value));
     }
 
     pub fn removeField(self: *World, name: []const u8) Fault!void {
-        self.root = try self.remove(self.root, name);
+        self.setRoot(try self.remove(self.rootRef(), name));
     }
 
     // ── the executable invariant ────────────────────────────────────────────
@@ -465,7 +549,7 @@ pub const World = struct {
     pub fn validate(self: *World) !void {
         var seen = std.AutoHashMap(Ref, void).init(self.gpa);
         defer seen.deinit();
-        try self.walk(@intFromEnum(self.root), &seen, 0);
+        try self.walk(@intFromEnum(self.rootRef()), &seen, 0);
     }
 
     fn walk(self: *World, r: Ref, seen: *std.AutoHashMap(Ref, void), depth: usize) !void {
@@ -502,27 +586,55 @@ pub const World = struct {
     fn span(self: *World, off: u64, len: u64) Fault!void {
         if (off == 0 and len == 0) return;
         const end = @as(usize, @intCast(off)) + @as(usize, @intCast(len));
-        if (end > self.loam.used) return error.BadSpan;
+        if (end > self.loam.used()) return error.BadSpan;
     }
 };
 
 // ── tests ─────────────────────────────────────────────────────────────────
 
 const testing = std.testing;
+const test_io = std.testing.io;
 const cap = 1 << 16;
 
+/// A world in a fresh file under the test's tmp dir. It owns the file, the
+/// path, and the tmp dir, so a test can reopen the same file after dropping the
+/// world that wrote it.
+const Scratch = struct {
+    tmp: std.testing.TmpDir,
+    path: []u8,
+    world: World,
+
+    fn init(capacity: usize) !Scratch {
+        var tmp = std.testing.tmpDir(.{});
+        errdefer tmp.cleanup();
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = try tmp.dir.realPath(test_io, &buf);
+        const path = try std.fs.path.join(testing.allocator, &.{ buf[0..n], "world.bin" });
+        errdefer testing.allocator.free(path);
+        return .{ .tmp = tmp, .path = path, .world = try World.open(testing.allocator, test_io, path, capacity) };
+    }
+
+    fn deinit(self: *Scratch) void {
+        self.world.deinit();
+        testing.allocator.free(self.path);
+        self.tmp.cleanup();
+    }
+};
+
 test "the root is a struct and starts empty" {
-    var w = try World.init(testing.allocator, cap);
-    defer w.deinit();
-    try testing.expectEqual(Tag.@"struct", w.tagOf(@intFromEnum(w.root)).?);
-    try testing.expectEqual(@as(usize, 0), w.fields(w.root).len);
+    var s = try Scratch.init(cap);
+    defer s.deinit();
+    const w = &s.world;
+    try testing.expectEqual(Tag.@"struct", w.tagOf(@intFromEnum(w.rootRef())).?);
+    try testing.expectEqual(@as(usize, 0), w.fields(w.rootRef()).len);
     try testing.expect(w.getField("anything") == null);
     try w.validate();
 }
 
 test "scalars round-trip" {
-    var w = try World.init(testing.allocator, cap);
-    defer w.deinit();
+    var s = try Scratch.init(cap);
+    defer s.deinit();
+    const w = &s.world;
     try w.putField("on", try w.makeBool(true));
     try w.putField("n", try w.makeInt(-42));
     try w.putField("x", try w.makeFloat(1.5));
@@ -536,30 +648,33 @@ test "scalars round-trip" {
 }
 
 test "overwriting a field keeps the struct handle" {
-    var w = try World.init(testing.allocator, cap);
-    defer w.deinit();
+    var s = try Scratch.init(cap);
+    defer s.deinit();
+    const w = &s.world;
     try w.putField("n", try w.makeInt(1));
-    const before = w.root;
+    const before = w.rootRef();
     try w.putField("n", try w.makeInt(2));
-    try testing.expectEqual(before, w.root);
+    try testing.expectEqual(before, w.rootRef());
     try testing.expectEqual(@as(i64, 2), w.asInt(w.getField("n").?).?);
 }
 
 test "adding a field relocates the struct and is still found" {
-    var w = try World.init(testing.allocator, cap);
-    defer w.deinit();
+    var s = try Scratch.init(cap);
+    defer s.deinit();
+    const w = &s.world;
     try w.putField("a", try w.makeInt(1));
-    const first = w.root;
+    const first = w.rootRef();
     try w.putField("b", try w.makeInt(2));
-    try testing.expect(w.root != first);
+    try testing.expect(w.rootRef() != first);
     try testing.expectEqual(@as(i64, 1), w.asInt(w.getField("a").?).?);
     try testing.expectEqual(@as(i64, 2), w.asInt(w.getField("b").?).?);
     try w.validate();
 }
 
 test "a nested struct and a list of refs" {
-    var w = try World.init(testing.allocator, cap);
-    defer w.deinit();
+    var s = try Scratch.init(cap);
+    defer s.deinit();
+    const w = &s.world;
     const inner = try w.makeStruct(&.{});
     try w.putField("inner", @intFromEnum(inner));
     const three = try w.makeInt(3);
@@ -575,8 +690,9 @@ test "a nested struct and a list of refs" {
 }
 
 test "typed null and a reference" {
-    var w = try World.init(testing.allocator, cap);
-    defer w.deinit();
+    var s = try Scratch.init(cap);
+    defer s.deinit();
+    const w = &s.world;
     try w.putField("maybe", try w.makeTypedNull(.int));
     const maybe = w.getField("maybe").?;
     try testing.expect(w.isNull(maybe));
@@ -592,8 +708,9 @@ test "typed null and a reference" {
 }
 
 test "removing a field" {
-    var w = try World.init(testing.allocator, cap);
-    defer w.deinit();
+    var s = try Scratch.init(cap);
+    defer s.deinit();
+    const w = &s.world;
     try w.putField("a", try w.makeInt(1));
     try w.putField("b", try w.makeInt(2));
     try w.removeField("a");
@@ -603,8 +720,9 @@ test "removing a field" {
 }
 
 test "decimal and timestamp shapes" {
-    var w = try World.init(testing.allocator, cap);
-    defer w.deinit();
+    var s = try Scratch.init(cap);
+    defer s.deinit();
+    const w = &s.world;
     const coeff = try w.makeInt(-123);
     try w.putField("price", try w.makeDecimal(coeff, -2, false));
     try testing.expectEqual(Tag.decimal, w.tagOf(w.getField("price").?).?);
@@ -621,12 +739,18 @@ test "decimal and timestamp shapes" {
 }
 
 test "the region is bounded: over-filling is an error, not a fault" {
-    var w = try World.init(testing.allocator, 64);
-    defer w.deinit();
+    var s = try Scratch.init(64);
+    defer s.deinit();
+    const w = &s.world;
     var i: u8 = 0;
     var filled = false;
     while (i < 20) : (i += 1) {
-        w.putField("k", try w.makeInt(i)) catch |e| {
+        const v = w.makeInt(i) catch |e| {
+            try testing.expectEqual(Fault.OutOfSpace, e);
+            filled = true;
+            break;
+        };
+        w.putField("k", v) catch |e| {
             try testing.expectEqual(Fault.OutOfSpace, e);
             filled = true;
             break;
@@ -637,8 +761,9 @@ test "the region is bounded: over-filling is an error, not a fault" {
 }
 
 test "validate reports a forged handle instead of reading out of bounds" {
-    var w = try World.init(testing.allocator, cap);
-    defer w.deinit();
+    var s = try Scratch.init(cap);
+    defer s.deinit();
+    const w = &s.world;
     // A Ref is an integer, so a caller can still mint one; the API cannot stop
     // that, but every reader now rejects it rather than dereferencing it.
     try testing.expect(w.tagOf(none) == null);
@@ -649,8 +774,9 @@ test "validate reports a forged handle instead of reading out of bounds" {
 test "random operations agree with a reference model" {
     var prng = std.Random.DefaultPrng.init(0xC0FFEE);
     const rand = prng.random();
-    var w = try World.init(testing.allocator, 1 << 22);
-    defer w.deinit();
+    var s = try Scratch.init(1 << 22);
+    defer s.deinit();
+    const w = &s.world;
 
     var model = std.StringHashMap(i64).init(testing.allocator);
     defer {
@@ -699,7 +825,7 @@ test "random operations agree with a reference model" {
     while (it.next()) |e| {
         try testing.expectEqual(e.value_ptr.*, w.asInt(w.getField(e.key_ptr.*).?).?);
     }
-    try testing.expectEqual(model.count(), w.fields(w.root).len);
+    try testing.expectEqual(model.count(), w.fields(w.rootRef()).len);
 }
 
 fn randomName(rand: std.Random, buf: []u8) []const u8 {
@@ -711,12 +837,13 @@ fn randomName(rand: std.Random, buf: []u8) []const u8 {
 test "randomly built nested values validate" {
     var prng = std.Random.DefaultPrng.init(0xBADF00D);
     const rand = prng.random();
-    var w = try World.init(testing.allocator, 1 << 20);
-    defer w.deinit();
+    var s = try Scratch.init(1 << 20);
+    defer s.deinit();
+    const w = &s.world;
 
     var i: usize = 0;
     while (i < 300) : (i += 1) {
-        const v = try randomValue(&w, rand, 0);
+        const v = try randomValue(w, rand, 0);
         try w.putField("v", v);
         try w.validate();
         try testing.expect(w.tagOf(v).? != .nil);
@@ -749,8 +876,9 @@ test "fuzz: no operation sequence corrupts the world" {
 }
 
 fn fuzzWorld(_: void, smith: *testing.Smith) anyerror!void {
-    var w = try World.init(testing.allocator, 1 << 16);
-    defer w.deinit();
+    var s = try Scratch.init(1 << 16);
+    defer s.deinit();
+    const w = &s.world;
 
     var names: [8][3]u8 = undefined;
     for (&names) |*n| smith.bytes(n);
@@ -767,4 +895,46 @@ fn fuzzWorld(_: void, smith: *testing.Smith) anyerror!void {
         }
         try w.validate();
     }
+}
+
+test "a reopen reads the graph a killed writer left" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(test_io, &buf);
+    const path = try std.fs.path.join(testing.allocator, &.{ buf[0..n], "world.bin" });
+    defer testing.allocator.free(path);
+
+    // Deliberately no deinit: the writer stops the way SIGKILL stops one, with
+    // no chance to flush. MAP_SHARED stores are already in the page cache, so a
+    // second open of the same file is exactly what a restarted process reads.
+    {
+        var first = try World.open(testing.allocator, test_io, path, cap);
+        try first.putField("on", try first.makeBool(true));
+        try first.putField("n", try first.makeInt(-42));
+        try first.putField("name", try first.makeString("world"));
+        try first.validate();
+    }
+
+    var w = try World.open(testing.allocator, test_io, path, 0); // capacity ignored: the file has length
+    defer w.deinit();
+    try testing.expectEqual(Tag.@"struct", w.tagOf(@intFromEnum(w.rootRef())).?);
+    try testing.expect(w.asBool(w.getField("on").?).?);
+    try testing.expectEqual(@as(i64, -42), w.asInt(w.getField("n").?).?);
+    try testing.expectEqualStrings("world", w.text(w.getField("name").?).?);
+    try w.validate();
+}
+
+test "a file that is not this image is refused, not read" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(test_io, &buf);
+    const path = try std.fs.path.join(testing.allocator, &.{ buf[0..n], "world.bin" });
+    defer testing.allocator.free(path);
+
+    var junk: [64]u8 = undefined;
+    @memset(&junk, 0xde);
+    try std.Io.Dir.cwd().writeFile(test_io, .{ .sub_path = path, .data = &junk });
+    try testing.expectError(error.BadImage, World.open(testing.allocator, test_io, path, 0));
 }
