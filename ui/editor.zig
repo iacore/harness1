@@ -377,10 +377,21 @@ pub const Editor = struct {
         if (turn >= self.nodes.items.len) return;
         self.selected = turn;
         self.cursor = self.nodes.items[turn].text.items.len;
+        self.anchor = self.cursor;
     }
 
     pub fn selectedKind(self: *Editor) Kind {
         return self.nodes.items[self.selected].kind;
+    }
+
+    pub fn turnText(self: *Editor, turn: Turn) []const u8 {
+        if (turn >= self.nodes.items.len) return "";
+        return self.nodes.items[turn].text.items;
+    }
+
+    pub fn turnKind(self: *Editor, turn: Turn) Kind {
+        if (turn >= self.nodes.items.len) return .output;
+        return self.nodes.items[turn].kind;
     }
 
     pub fn selectedRev(self: *Editor) []const u8 {
@@ -396,6 +407,7 @@ pub const Editor = struct {
         node.text.clearRetainingCapacity();
         try node.text.appendSlice(self.gpa, content);
         self.cursor = 0;
+        self.anchor = 0;
     }
 
     pub fn insertByte(self: *Editor, byte: u8) void {
@@ -404,13 +416,26 @@ pub const Editor = struct {
         self.cursor += 1;
     }
 
-    /// Removes the bytes in `[from, to)` of the selected turn.
+    /// Removes the bytes in `[from, to)` of the selected turn, and keeps both ends
+    /// of the selection inside what is left. A caller may hand ends that no
+    /// longer exist — the text can have shrunk under them — and this is where
+    /// that is made safe rather than trusted.
     pub fn remove(self: *Editor, from: usize, to: usize) void {
-        if (to <= from) return;
         const node = &self.nodes.items[self.selected];
-        std.mem.copyForwards(u8, node.text.items[from..], node.text.items[to..]);
-        node.text.items.len -= to - from;
-        self.cursor = from;
+        const length = node.text.items.len;
+        const end = @min(to, length);
+        const start = @min(from, end);
+        if (end <= start) {
+            if (from > to) {
+                self.cursor = @min(self.cursor, length);
+                self.anchor = @min(self.anchor, length);
+            }
+            return;
+        }
+        std.mem.copyForwards(u8, node.text.items[start..], node.text.items[end..]);
+        node.text.items.len -= end - start;
+        self.cursor = start;
+        self.anchor = @min(self.anchor, node.text.items.len);
     }
 
     pub fn moveCursor(self: *Editor, index: usize) void {
@@ -430,7 +455,10 @@ pub const Editor = struct {
     pub const Range = struct { start: usize, end: usize };
 
     pub fn selection(self: *Editor) Range {
-        return .{ .start = @min(self.anchor, self.cursor), .end = @max(self.anchor, self.cursor) };
+        const length = self.text().len;
+        const anchor = @min(self.anchor, length);
+        const cursor = @min(self.cursor, length);
+        return .{ .start = @min(anchor, cursor), .end = @max(anchor, cursor) };
     }
 
     /// Reduces the selection to its cursor (`;`).
@@ -596,6 +624,24 @@ fn lineOf(content: []const u8, index: usize) []const u8 {
     }
     const end = std.mem.indexOfScalar(u8, content[start..], '\n') orelse content.len - start;
     return content[start .. start + end];
+}
+
+test "a selection cannot outlive the text it pointed at" {
+    var editor = try Editor.init(std.testing.allocator);
+    defer editor.deinit();
+
+    try editor.replaceText("abc");
+    editor.selectAll();
+    try std.testing.expectEqual(@as(usize, 0), editor.selection().start);
+    try std.testing.expectEqual(@as(usize, 3), editor.selection().end);
+
+    // The text shrinks under the selection; typing then must not read past it.
+    editor.remove(0, 3);
+    try std.testing.expectEqual(@as(usize, 0), editor.selection().start);
+    try std.testing.expectEqual(@as(usize, 0), editor.selection().end);
+    editor.deleteSelection();
+    editor.insertByte('x');
+    try std.testing.expectEqualStrings("x", editor.text());
 }
 
 test "undo puts a turn's text back, and a new change drops the redo" {

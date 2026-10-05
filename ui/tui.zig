@@ -42,6 +42,9 @@ const run1 = @import("run1");
 const kitty = @import("kitty.zig");
 const ipython = @import("ipython.zig");
 const editor = @import("editor.zig");
+const row = @import("row.zig");
+const theme = @import("theme.zig");
+const screen = @import("screen.zig");
 
 pub fn run(init: std.process.Init) !void {
     var tui = try Tui.init(init.gpa);
@@ -83,15 +86,18 @@ const Tui = struct {
     rows: usize = 24,
     /// The display row drawn on the first row after the status.
     top: usize = 0,
+    /// The frame being built, and the one last painted.
+    frame: screen.Screen,
 
     fn init(gpa: std.mem.Allocator) !Tui {
-        return .{ .gpa = gpa, .doc = try editor.Editor.init(gpa) };
+        return .{ .gpa = gpa, .doc = try editor.Editor.init(gpa), .frame = screen.Screen.init(gpa) };
     }
 
     fn deinit(self: *Tui) void {
         self.doc.deinit();
         self.command.deinit(self.gpa);
         self.draft.deinit(self.gpa);
+        self.frame.deinit();
     }
 
     fn setStatus(self: *Tui, comptime format: []const u8, args: anytype) void {
@@ -532,58 +538,162 @@ const Tui = struct {
             self.cols = size.cols;
         }
         const width = self.columns();
-        const height = if (self.rows > 3) self.rows - 2 else 1;
+        const height = if (self.rows > 2) self.rows - 2 else 1;
+        self.frame.height = self.rows;
 
-        const cursor_line = self.doc.cursorLine();
+        var transcript: std.ArrayList([]u8) = .empty;
+        defer freeRows(self.gpa, &transcript);
         var cursor_row: usize = 0;
-        var line: usize = 0;
-        while (line < cursor_line) : (line += 1) cursor_row += rowsFor(self.doc.line(line), width);
-        const cells = kitty.displayWidth(self.doc.line(cursor_line)[0..self.doc.cursorColumn()]);
-        cursor_row += cells / width;
-        const cursor_column = cells % width;
+        var cursor_col: usize = 0;
+        self.turnRows(&transcript, width, &cursor_row, &cursor_col) catch {};
 
+        // Keep the cursor in view.
         if (cursor_row < self.top) self.top = cursor_row;
         if (cursor_row >= self.top + height) self.top = cursor_row + 1 - height;
+        if (transcript.items.len >= height and self.top + height > transcript.items.len) {
+            self.top = transcript.items.len - height;
+        }
+        if (self.top > transcript.items.len) self.top = transcript.items.len;
 
-        kitty.write(kitty.erase_screen ++ kitty.cursor_home) catch {};
-        kitty.print("\x1b[7m run1 \x1b[0m {s}  rev {s}  sel {s}", .{
-            @tagName(self.mode),
-            self.doc.revName(),
-            @tagName(self.doc.selectedKind()),
-        });
-        if (self.doc.readingName()) |name| kitty.print("  reading {s}", .{name});
-        if (self.doc.streamCount() != 0) kitty.print("  {d} streaming", .{self.doc.streamCount()});
-        if (self.status.len != 0) kitty.print("  — {s}", .{self.status});
-        kitty.write(" \x1b[K") catch {};
-
-        var display: usize = 0;
+        self.frame.clear();
+        self.statusRow(width) catch {};
         var drawn: usize = 0;
-        line = 0;
-        outer: while (line < self.doc.lineCount()) : (line += 1) {
-            const text = self.doc.line(line);
-            var row: usize = 0;
-            while (rowRange(text, row, width)) |range| : (row += 1) {
-                if (display < self.top) {
-                    display += 1;
-                    continue;
-                }
-                if (drawn >= height) break :outer;
-                kitty.print("\x1b[{d};1H\x1b[K", .{2 + drawn});
-                kitty.write(text[range.start..range.end]) catch {};
-                drawn += 1;
-                display += 1;
-            }
+        while (drawn < height) : (drawn += 1) {
+            const index = self.top + drawn;
+            if (index >= transcript.items.len) break;
+            self.frame.add(transcript.items[index]) catch {};
         }
 
-        kitty.print("\x1b[{d};1H\x1b[K", .{self.rows});
         if (self.mode == .command) {
-            kitty.print(":{s}", .{self.command.items});
-            kitty.print("\x1b[{d};{d}H", .{ self.rows, self.command_cursor + 2 });
+            self.commandRow(width) catch {};
+            self.frame.place(self.rows - 1, @min(self.command_cursor + 2, width - 1));
         } else {
-            kitty.print("\x1b[{d};{d}H", .{ 2 + (cursor_row - self.top), cursor_column + 1 });
+            self.frame.place(1 + (cursor_row - self.top), @min(cursor_col, width - 1));
+        }
+        self.frame.flush();
+    }
+
+    /// The bar: the mode, the revision, the turn being edited, and whatever the
+    /// last key had to say.
+    fn statusRow(self: *Tui, width: usize) !void {
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(self.gpa);
+        try text.appendSlice(self.gpa, " run1  ");
+        try text.appendSlice(self.gpa, @tagName(self.mode));
+        try text.appendSlice(self.gpa, "  rev ");
+        try text.appendSlice(self.gpa, self.doc.revName());
+        try text.appendSlice(self.gpa, "  sel ");
+        try text.appendSlice(self.gpa, @tagName(self.doc.selectedKind()));
+        if (self.doc.readingName()) |name| {
+            try text.appendSlice(self.gpa, "  reading ");
+            try text.appendSlice(self.gpa, name);
+        }
+        if (self.doc.streamCount() != 0) {
+            var count: [32]u8 = undefined;
+            try text.appendSlice(self.gpa, try std.fmt.bufPrint(&count, "  {d} streaming", .{self.doc.streamCount()}));
+        }
+        if (self.status.len != 0) {
+            try text.appendSlice(self.gpa, "  — ");
+            try text.appendSlice(self.gpa, self.status);
+        }
+
+        const kept = try row.truncate(self.gpa, text.items, width);
+        defer self.gpa.free(kept);
+        var padded: std.ArrayList(u8) = .empty;
+        defer padded.deinit(self.gpa);
+        try padded.appendSlice(self.gpa, kept);
+        const cells = row.visibleWidth(kept);
+        if (cells < width) try padded.appendNTimes(self.gpa, ' ', width - cells);
+        const painted = try theme.paint(self.gpa, theme.bar, padded.items);
+        defer self.gpa.free(painted);
+        try self.frame.add(painted);
+    }
+
+    /// The command line, on the last row.
+    fn commandRow(self: *Tui, width: usize) !void {
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(self.gpa);
+        try text.appendSlice(self.gpa, ": ");
+        try text.appendSlice(self.gpa, self.command.items);
+        const kept = try row.truncate(self.gpa, text.items, width);
+        defer self.gpa.free(kept);
+        try self.frame.add(kept);
+    }
+
+    /// The turns, each with its gutter, wrapped to the width — and where the
+    /// cursor lands among the rows they made.
+    fn turnRows(self: *Tui, out: *std.ArrayList([]u8), width: usize, cursor_row: *usize, cursor_col: *usize) !void {
+        var turns: std.ArrayList(editor.Turn) = .empty;
+        defer turns.deinit(self.gpa);
+        try self.doc.view(&turns);
+
+        const gutter = 2;
+        const inner = if (width > gutter) width - gutter else 1;
+        const range = self.doc.selection();
+
+        for (turns.items) |turn| {
+            const raw = self.doc.turnText(turn);
+            const styled = if (turn == self.doc.selected)
+                try theme.highlight(self.gpa, raw, range.start, range.end)
+            else
+                try self.gpa.dupe(u8, raw);
+            defer self.gpa.free(styled);
+
+            var wrapped: std.ArrayList([]u8) = .empty;
+            defer freeRows(self.gpa, &wrapped);
+            try row.wrap(self.gpa, styled, inner, &wrapped);
+
+            const first = gutterFor(self.doc.turnKind(turn));
+            for (wrapped.items, 0..) |text, i| {
+                const line = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ if (i == 0) first else "  ", text });
+                errdefer self.gpa.free(line);
+                try out.append(self.gpa, line);
+            }
+            if (turn == self.doc.selected and wrapped.items.len != 0) {
+                const position = wrappedPosition(raw, self.doc.cursor, inner);
+                if (position.row < wrapped.items.len) {
+                    cursor_row.* = out.items.len - (wrapped.items.len - position.row);
+                    cursor_col.* = gutter + position.col;
+                }
+            }
         }
     }
 };
+
+/// The two cells before a turn: a mark for what it is, and the space after it.
+fn gutterFor(kind: editor.Kind) []const u8 {
+    return switch (kind) {
+        .prompt => theme.accent ++ "›" ++ theme.reset ++ " ",
+        .user => theme.bold ++ "›" ++ theme.reset ++ " ",
+        .assistant => "∙ ",
+        .output => theme.dim ++ "∙" ++ theme.reset ++ " ",
+    };
+}
+
+/// Where the cursor sits once `text` is wrapped: which row of it, and which
+/// cell in that row.
+fn wrappedPosition(text: []const u8, index: usize, width: usize) struct { row: usize, col: usize } {
+    var at: usize = 0;
+    var at_row: usize = 0;
+    var cells: usize = 0;
+    const limit = @min(index, text.len);
+    while (at < limit) {
+        const here = kitty.clusterWidth(text, at);
+        if (cells != 0 and cells + here > width) {
+            at_row += 1;
+            cells = 0;
+        }
+        cells += here;
+        at = kitty.nextGrapheme(text, at);
+    }
+    return .{ .row = at_row, .col = cells };
+}
+
+/// Frees the rows of a list this file built.
+fn freeRows(gpa: std.mem.Allocator, rows: *std.ArrayList([]u8)) void {
+    for (rows.items) |text| gpa.free(text);
+    rows.clearRetainingCapacity();
+}
 
 /// Whether a byte is part of a word, for the word motions.
 fn isWordByte(byte: u8) bool {
@@ -646,44 +756,4 @@ fn cellAt(text: []const u8, cells: usize) usize {
         at = kitty.nextGrapheme(text, at);
     }
     return at;
-}
-
-/// The display rows a line takes at `width` columns.
-fn rowsFor(text: []const u8, width: usize) usize {
-    var rows: usize = 1;
-    var cells: usize = 0;
-    var at: usize = 0;
-    while (at < text.len) {
-        const here = kitty.clusterWidth(text, at);
-        if (cells != 0 and cells + here > width) {
-            rows += 1;
-            cells = 0;
-        }
-        cells += here;
-        at = kitty.nextGrapheme(text, at);
-    }
-    return rows;
-}
-
-/// The bytes of one wrapped row of a line.
-fn rowRange(text: []const u8, target: usize, width: usize) ?struct { start: usize, end: usize } {
-    var row: usize = 0;
-    var start: usize = 0;
-    var cells: usize = 0;
-    var at: usize = 0;
-    while (true) {
-        if (at >= text.len) {
-            if (row == target) return .{ .start = start, .end = text.len };
-            return null;
-        }
-        const here = kitty.clusterWidth(text, at);
-        if (cells != 0 and cells + here > width) {
-            if (row == target) return .{ .start = start, .end = at };
-            row += 1;
-            start = at;
-            cells = 0;
-        }
-        cells += here;
-        at = kitty.nextGrapheme(text, at);
-    }
 }

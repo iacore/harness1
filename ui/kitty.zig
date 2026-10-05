@@ -45,10 +45,10 @@ pub fn write(bytes: []const u8) !void {
 
 /// Writes a formatted string to the terminal. A write that fails is dropped:
 /// the terminal is where the UI would have reported it.
-pub fn print(comptime format: []const u8, args: anytype) void {
+pub fn print(comptime format: []const u8, args: anytype) !void {
     var buffer: [512]u8 = undefined;
     const text = std.fmt.bufPrint(&buffer, format, args) catch return;
-    write(text) catch {};
+    try write(text);
 }
 
 /// Writes every part in one `writev`, so the terminal takes them as a single
