@@ -1,5 +1,13 @@
 # AGENTS.md
 
+## Commit after every stage of work
+
+Commit the moment a stage is finished — a rename, a refactor, a probe, one file
+— and commit frequently through a long sequence rather than batching it at the
+end. Work left uncommitted is work the next edit can overwrite and a crash can
+take. This binds every agent that works on run1: stop with the tree clean, and
+never leave a stage uncommitted for the next one to build on.
+
 ## Be precise over cheap
 
 We will rather bust the prefix cache rather than let a running prompt see stale data. a hit is an
