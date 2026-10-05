@@ -19,7 +19,7 @@ static int started = 0;
 static PyObject *namespace = NULL;
 
 static const char *SETUP =
-    "import io, contextlib, re, traceback\n"
+    "import io, contextlib, re, subprocess, sys, traceback\n"
     "from IPython.core.interactiveshell import InteractiveShell\n"
     "shell = InteractiveShell.instance()\n"
     "_ansi = re.compile(r'\\x1b\\[[0-9;?]*[A-Za-z]')\n"
@@ -28,6 +28,17 @@ static const char *SETUP =
     "    _turns.append(str(text))\n"
     "    print('turn added: ' + str(text))\n"
     "shell.user_ns['add_turn'] = add_turn\n"
+    "def _run1_fish(command):\n"
+    "    done = subprocess.run(['fish', '-c', command], capture_output=True, text=True)\n"
+    "    sys.stdout.write(done.stdout)\n"
+    "    sys.stderr.write(done.stderr)\n"
+    "    return done.returncode\n"
+    "shell.user_ns['fish'] = _run1_fish\n"
+    "def _run1_fish_call(command):\n"
+    "    code, out = _capture(_run1_fish, command)\n"
+    "    if code:\n"
+    "        out += '[fish exit %d]\\n' % code\n"
+    "    return out\n"
     "def _capture(fn, *args):\n"
     "    buf = io.StringIO()\n"
     "    result = None\n"
@@ -123,6 +134,10 @@ char *run1_python_complete(const char *line, int cursor) {
 
 char *run1_python_history(int offset) {
     return call("_run1_history", NULL, offset, 2);
+}
+
+char *run1_python_fish(const char *command) {
+    return call("_run1_fish_call", command, 0, 0);
 }
 
 char *run1_python_add_turn(const char *text) {

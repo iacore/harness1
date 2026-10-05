@@ -1,7 +1,8 @@
 //! The TUI mode: a prompt buffer and, over it, an IPython command line.
 //!
 //! Normal mode, on the prompt:
-//!   Enter          send it — the script's `add_turn` — and clear the buffer
+//!   Enter          send it — `!command` runs it in fish, anything else the
+//!                  script's `add_turn` — and clear the buffer
 //!   Shift-Enter    a newline, so a prompt can be several lines
 //!   Tab, `:`       the command line
 //!   Ctrl-C         leave run1
@@ -108,14 +109,19 @@ const Editor = struct {
         return false;
     }
 
-    /// Sends the prompt: the scripting layer's `add_turn`, so sending a turn is
-    /// a step like any other.
+    /// Sends the prompt. A line starting with `!` runs in fish — the shell set
+    /// up for this — and anything else goes through the scripting layer's
+    /// `add_turn`, so sending a turn is a step like any other.
     fn submit(self: *Editor) void {
         if (self.buffer.items.len == 0) {
             self.status = "nothing to send";
             return;
         }
-        const output = ipython.addTurn(self.gpa, self.buffer.items) catch {
+        const bang = std.mem.startsWith(u8, self.buffer.items, "!");
+        const output = (if (bang)
+            ipython.fish(self.gpa, std.mem.trimStart(u8, self.buffer.items[1..], " \t"))
+        else
+            ipython.addTurn(self.gpa, self.buffer.items)) catch {
             self.status = "the scripting layer failed";
             return;
         };

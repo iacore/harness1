@@ -10,6 +10,7 @@ const Allocator = std.mem.Allocator;
 extern fn run1_python_run(code: [*:0]const u8) [*:0]u8;
 extern fn run1_python_complete(line: [*:0]const u8, cursor: c_int) [*:0]u8;
 extern fn run1_python_history(offset: c_int) [*:0]u8;
+extern fn run1_python_fish(command: [*:0]const u8) [*:0]u8;
 extern fn run1_python_add_turn(text: [*:0]const u8) [*:0]u8;
 extern fn run1_python_free(text: [*:0]u8) void;
 
@@ -31,6 +32,13 @@ pub fn complete(allocator: Allocator, line: []const u8, cursor: usize) ![]u8 {
 /// — or an empty copy when there is none.
 pub fn history(allocator: Allocator, offset: usize) ![]u8 {
     return takeCaptured(allocator, run1_python_history(@intCast(offset)));
+}
+
+/// Runs `command` in fish and returns what it printed, as an owned copy.
+pub fn fish(allocator: Allocator, command: []const u8) ![]u8 {
+    const zeroed = try allocator.dupeSentinel(u8, command, 0);
+    defer allocator.free(zeroed);
+    return takeCaptured(allocator, run1_python_fish(zeroed.ptr));
 }
 
 /// Runs the script's `add_turn` step on `text` and returns its captured output,
