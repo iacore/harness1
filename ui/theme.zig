@@ -15,6 +15,12 @@ pub const dim = "\x1b[2m";
 pub const accent = "\x1b[36m";
 pub const bold = "\x1b[1m";
 pub const warning = "\x1b[33m";
+pub const italic = "\x1b[3m";
+pub const underline = "\x1b[4m";
+pub const strike = "\x1b[9m";
+/// A code span or block: the terminal's "reverse" is a poor fit in a transcript,
+/// so code is the accent colour, which theme has a name for.
+pub const code = "\x1b[36m";
 
 /// `text` in `style`.
 pub fn paint(allocator: Allocator, style: []const u8, text: []const u8) ![]u8 {

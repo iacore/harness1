@@ -37,6 +37,9 @@ const editor = @import("editor.zig");
 const row = @import("row.zig");
 const theme = @import("theme.zig");
 const screen = @import("screen.zig");
+const markup = @import("markup.zig");
+const pikchr = @import("pikchr.zig");
+const graphics = @import("graphics.zig");
 const model = @import("model.zig");
 const session = @import("session.zig");
 const debug = run1.debug;
@@ -222,6 +225,13 @@ const Tui = struct {
     top: usize = 0,
     /// The frame being built, and the one last painted.
     frame: screen.Screen,
+    /// The commands a ```pikchr fence is drawn with, when this machine has
+    /// them; null when it does not, and then the fence stays text.
+    diagrams: ?pikchr.Tools = null,
+    /// The pictures already rendered and transmitted, keyed by the fence's own
+    /// text. A value with `id` zero is a fence that could not be drawn, kept so
+    /// it is not retried on every frame.
+    pictures: std.StringHashMap(markup.Diagrams.Diagram),
 
     fn init(gpa: std.mem.Allocator, io: Io, environ_map: *const std.process.Environ.Map) !Tui {
         var tui: Tui = .{
@@ -230,10 +240,14 @@ const Tui = struct {
             .environ_map = environ_map,
             .doc = try editor.Editor.init(gpa),
             .frame = screen.Screen.init(gpa),
+            .pictures = std.StringHashMap(markup.Diagrams.Diagram).init(gpa),
         };
         // A store that cannot be opened is not a reason to refuse to run: the
         // session is simply not kept.
         tui.world = session.open(gpa, io, environ_map) catch null;
+        // A machine without pikchr simply draws the fence as text; the probe is
+        // here, once, so no frame pays for it.
+        tui.diagrams = pikchr.Tools.find(io, gpa);
         return tui;
     }
 
@@ -266,6 +280,9 @@ const Tui = struct {
         self.draft.deinit(self.gpa);
         self.line.deinit(self.gpa);
         if (self.sheet) |text| self.gpa.free(text);
+        var keys = self.pictures.keyIterator();
+        while (keys.next()) |key| self.gpa.free(key.*);
+        self.pictures.deinit();
         if (self.world) |*w| w.deinit();
         self.frame.deinit();
     }
@@ -1273,6 +1290,30 @@ const Tui = struct {
             for ([_]bool{ true, false }) |is_reasoning| {
                 const content = if (is_reasoning) reasoning else raw;
                 if (content.len == 0) continue;
+                if (!is_reasoning) content_start = out.items.len;
+
+                // A reply is Djot, so a turn that is not being edited is drawn
+                // as what it means — headings, emphasis, a rule, a picture. The
+                // turn being edited is drawn as its own source, where the cursor
+                // and the selection are exact; the chain of thought above it is
+                // dim, and is not Djot to begin with.
+                if (!is_reasoning and !is_selected) {
+                    var rendered = markup.render(self.gpa, content, inner, .{ .ctx = self, .resolve = resolveDiagram }) catch null;
+                    if (rendered) |*rows| {
+                        defer {
+                            for (rows.items) |text| self.gpa.free(text);
+                            rows.deinit(self.gpa);
+                        }
+                        for (rows.items) |text| {
+                            const entry = try std.fmt.allocPrint(self.gpa, "{s}{s}", .{ if (first_row) mark else "  ", text });
+                            errdefer self.gpa.free(entry);
+                            try out.append(self.gpa, entry);
+                            first_row = false;
+                        }
+                        continue;
+                    }
+                }
+
                 const styled = if (is_reasoning)
                     try theme.paint(self.gpa, theme.dim, content)
                 else if (is_selected)
@@ -1280,7 +1321,6 @@ const Tui = struct {
                 else
                     try self.gpa.dupe(u8, content);
                 defer self.gpa.free(styled);
-                if (!is_reasoning) content_start = out.items.len;
 
                 var lines = std.mem.splitScalar(u8, styled, '\n');
                 while (lines.next()) |line| {
@@ -1317,7 +1357,66 @@ const Tui = struct {
             }
         }
     }
+
+    /// A ```pikchr fence's cells: rendered and transmitted the first time it is
+    /// seen, and answered from the cache after — the render runs two commands,
+    /// so a frame must never pay for it twice.
+    fn resolveDiagram(ctx: *anyopaque, allocator: std.mem.Allocator, source: []const u8) ?markup.Diagrams.Diagram {
+        const self: *Tui = @ptrCast(@alignCast(ctx));
+        if (self.pictures.get(source)) |cached| return if (cached.id == 0) null else cached;
+        const picture = self.paintDiagram(allocator, source) orelse {
+            self.remember(source, .{ .id = 0, .cols = 0, .rows = 0 });
+            return null;
+        };
+        self.remember(source, picture);
+        return picture;
+    }
+
+    fn remember(self: *Tui, source: []const u8, picture: markup.Diagrams.Diagram) void {
+        const key = self.gpa.dupe(u8, source) catch return;
+        self.pictures.put(key, picture) catch self.gpa.free(key);
+    }
+
+    /// Runs the pikchr and rasterizer commands and sends the PNG to the
+    /// terminal with a virtual placement, so the placeholder rows can show it.
+    fn paintDiagram(self: *Tui, allocator: std.mem.Allocator, source: []const u8) ?markup.Diagrams.Diagram {
+        const tools = self.diagrams orelse return null;
+        const image = (tools.render(self.io, allocator, source) catch return null) orelse return null;
+        defer image.deinit(allocator);
+        const cell = self.cellSize();
+        const wide = @max(1, @as(usize, @intFromFloat(image.width / cell.width)));
+        const tall = @max(1, @as(usize, @intFromFloat(image.height / cell.height)));
+        // The picture cannot be wider than the transcript it sits in; kitty
+        // fits it to the box, so clamping the columns is enough.
+        const cols = @min(wide, @max(self.cols -| 4, 1));
+        const id = imageId(source);
+        graphics.transmit(allocator, id, image.png, cols, tall) catch return null;
+        return .{ .id = id, .cols = cols, .rows = tall };
+    }
+
+    /// One cell of the terminal in pixels, from its window and the cells it
+    /// holds; an assumed cell when the terminal reports no pixels.
+    const Cell = struct { width: f32, height: f32 };
+    fn cellSize(self: *Tui) Cell {
+        if (kitty.pixels()) |pixels| {
+            const cols: f32 = @floatFromInt(@max(self.cols, 1));
+            const rows: f32 = @floatFromInt(@max(self.rows, 1));
+            return .{
+                .width = @as(f32, @floatFromInt(pixels.cols)) / cols,
+                .height = @as(f32, @floatFromInt(pixels.rows)) / rows,
+            };
+        }
+        return .{ .width = 9, .height = 18 };
+    }
 };
+
+/// The id a fence's picture is transmitted under, and the one its placeholder
+/// cells name: a hash of the fence's text, kept in 24 bits and never zero.
+fn imageId(source: []const u8) u32 {
+    const hash = std.hash.Wyhash.hash(0, source);
+    const id: u32 = @truncate(hash & 0xFFFFFF);
+    return if (id == 0) 1 else id;
+}
 
 /// The two cells before a turn: a mark for what it is, and the space after it.
 fn gutterFor(kind: editor.Kind) []const u8 {
