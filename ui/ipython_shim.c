@@ -22,6 +22,8 @@ static const char *SETUP =
     "import io, contextlib, re, subprocess, sys, traceback\n"
     "from IPython.core.interactiveshell import InteractiveShell\n"
     "shell = InteractiveShell.instance()\n"
+    "def _run1_prompt():\n"
+    "    return 'In [%d]: ' % shell.execution_count\n"
     "_ansi = re.compile(r'\\x1b\\[[0-9;?]*[A-Za-z]')\n"
     "_turns = []\n"
     "def add_turn(text):\n"
@@ -141,6 +143,36 @@ char *run1_python_fish(const char *command) {
 
 char *run1_python_add_turn(const char *text) {
     return call("_run1_add", text, 0, 0);
+}
+
+// The steps above hand back an allocation; this one writes into the caller's
+// buffer instead, because the prompt is re-read with every Tab and a copy that
+// is thrown away is not worth making.
+size_t run1_python_prompt(char *out, size_t capacity) {
+    if (capacity == 0) {
+        return 0;
+    }
+    run1_python_start();
+    PyObject *fn = PyDict_GetItemString(namespace, "_run1_prompt");
+    if (fn == NULL) {
+        return 0;
+    }
+    PyObject *result = PyObject_CallFunctionObjArgs(fn, NULL);
+    if (result == NULL) {
+        PyErr_Print();
+        return 0;
+    }
+    const char *text = PyUnicode_AsUTF8(result);
+    size_t length = text == NULL ? 0 : strlen(text);
+    if (length >= capacity) {
+        length = capacity - 1;
+    }
+    if (length != 0) {
+        memcpy(out, text, length);
+    }
+    out[length] = '\0';
+    Py_DECREF(result);
+    return length;
 }
 
 void run1_python_free(char *text) {

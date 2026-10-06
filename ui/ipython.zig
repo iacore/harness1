@@ -1,8 +1,9 @@
 //! run1's scripting layer: an IPython shell embedded in this process, never
 //! owning the terminal. A line is run through the shell and its output
-//! captured; the shell keeps the state, the history and the completion, so the
-//! command line behaves as IPython's does. `add_turn` is the step run1's own
-//! prompt calls when it is submitted — both live in `python_shim.c`.
+//! captured; the shell keeps the state, the history, the completion and the
+//! prompt, so the command line behaves as IPython's does. `add_turn` is the
+//! step run1's own prompt calls when it is submitted — both live in
+//! `python_shim.c`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -12,6 +13,7 @@ extern fn run1_python_complete(line: [*:0]const u8, cursor: c_int) [*:0]u8;
 extern fn run1_python_history(offset: c_int) [*:0]u8;
 extern fn run1_python_fish(command: [*:0]const u8) [*:0]u8;
 extern fn run1_python_add_turn(text: [*:0]const u8) [*:0]u8;
+extern fn run1_python_prompt(out: [*]u8, capacity: usize) usize;
 extern fn run1_python_free(text: [*:0]u8) void;
 
 /// Runs one line in the shell and returns what it printed, as an owned copy.
@@ -47,6 +49,14 @@ pub fn addTurn(allocator: Allocator, text: []const u8) ![]u8 {
     const zeroed = try allocator.dupeSentinel(u8, text, 0);
     defer allocator.free(zeroed);
     return takeCaptured(allocator, run1_python_add_turn(zeroed.ptr));
+}
+
+/// The prompt the shell is on — `In [n]: ` — written into `buffer`, or null
+/// when it could not be built.
+pub fn prompt(buffer: []u8) ?[]u8 {
+    const length = run1_python_prompt(buffer.ptr, buffer.len);
+    if (length == 0) return null;
+    return buffer[0..length];
 }
 
 fn takeCaptured(allocator: Allocator, captured: [*:0]u8) ![]u8 {

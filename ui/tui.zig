@@ -186,6 +186,11 @@ const Tui = struct {
     /// The command line, kept apart from the prompt.
     command: std.ArrayList(u8) = .empty,
     command_cursor: usize = 0,
+    /// The prompt the shell's line opens with — `In [n]: `, the number the
+    /// shell's own counter is on. Read when the line opens, not while it is
+    /// drawn: the number moves only when a line runs.
+    shell_prompt_buffer: [32]u8 = undefined,
+    shell_prompt: []const u8 = "In [1]: ",
     /// The harness's own command line, over `:` — a different line from the
     /// shell's, because a command and a Python line are different languages.
     line: std.ArrayList(u8) = .empty,
@@ -402,7 +407,7 @@ const Tui = struct {
         switch (key) {
             .byte => |byte| switch (byte) {
                 3 => return true, // Ctrl-C
-                9 => self.mode = .shell, // Tab: IPython's line
+                9 => self.enterShell(), // Tab: IPython's line
                 ':' => self.enterCommand(), // and `:` for this harness's own
                 'h' => self.doc.stepTo(kitty.prevGrapheme(text, 0, self.doc.cursor)),
                 'l' => self.doc.stepTo(kitty.nextGrapheme(text, self.doc.cursor)),
@@ -526,7 +531,7 @@ const Tui = struct {
         switch (key) {
             .byte => |byte| switch (byte) {
                 3 => return true, // Ctrl-C
-                9 => self.mode = .shell, // Tab: IPython's line
+                9 => self.enterShell(), // Tab: IPython's line
                 '\r', '\n' => self.submit(),
                 0x7f, 0x08 => self.backspace(),
                 else => if (byte >= 0x20) self.typeByte(byte),
@@ -907,6 +912,13 @@ const Tui = struct {
 
     // ── Command mode, as IPython's ──────────────────────────────────────────
 
+    /// Hands the bottom row to the shell's line, carrying the prompt the shell
+    /// is on now.
+    fn enterShell(self: *Tui) void {
+        self.shell_prompt = ipython.prompt(&self.shell_prompt_buffer) orelse "In [1]: ";
+        self.mode = .shell;
+    }
+
     fn shellKey(self: *Tui, key: kitty.Key) bool {
         switch (key) {
             .byte => |byte| switch (byte) {
@@ -1087,8 +1099,8 @@ const Tui = struct {
                 self.frame.place(self.rows - 1, @min(self.line_cursor + 2, width - 1));
             },
             .shell => {
-                self.lineRow(width, ">>> ", self.command.items) catch {};
-                self.frame.place(self.rows - 1, @min(self.command_cursor + 4, width - 1));
+                self.lineRow(width, self.shell_prompt, self.command.items) catch {};
+                self.frame.place(self.rows - 1, @min(self.command_cursor + self.shell_prompt.len, width - 1));
             },
             // The sheet is scrolled, not edited, so its rows are not a place a
             // cursor can be: the position it would have is not computed.
