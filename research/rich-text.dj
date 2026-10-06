@@ -136,29 +136,54 @@ Djot does not highlight code. A ` ```lang ` fence carries a language and the
 renderer decides what to do with it, so Djot supplies the markup — paragraphs,
 emphasis, attributes, generic containers, math — and nothing about tokenizing.
 
-## Where each would attach
+## What was built
 
-Both markups are trees over text, and both have a generic named container —
-`:::` in Djot, `:::` in Verso — which is the one construct that maps onto
-`Node.element` without loss. Neither renders rows by itself.
+Verso was not taken. Djot was, and the pieces that were decided:
 
-- Djot, as the markup: already the format of every file under `research/`, with
-  a spec, a reference implementation, test suites, and Pandoc as a parse check.
-  A turn's element tags become div names and its attributes become `{...}`. It
-  renders the model's prose; it does not highlight.
-- Highlighting, as its own step: a tokenizer for the few languages a turn
-  carries, walked by `ui/row.zig` and painted from `ui/theme.zig`. Small,
-  testable, no Lean.
-- Verso, only when the code is Lean and the destination is HTML: exact Lean
-  highlighting with proof states and hovers, at the cost of a Lean toolchain
-  and a web backend. The right tool for a Verso site; the wrong one for the TUI.
+- `ui/markup.zig` — Djot in, rows out. It walks djot.zig's open AST and draws
+  headings bold, `_emph_` italic, `*strong*` bold, `---` a rule of `─`, lists
+  bullets and numbers, `>` a `│`-prefixed dim quote, a fence its source, tables
+  pipe cells, links underlined. The djot package is a path dependency resolved
+  only for the UI (`build.zig`).
+- `ui/graphics.zig` — a PNG in the transcript. It is transmitted once as a
+  *virtual placement* (`a=T,f=100,q=2,i=…,U=1,c=…,r=…`) and shown by Unicode
+  placeholder cells: U+10EEEE, the image id in the foreground colour, and a row
+  diacritic on each row's first cell, the rest inheriting the column to the
+  left. Because the picture *is* cells, the frame's diffing and the terminal's
+  scrolling move it for free.
+- `ui/pikchr.zig` — a `pikchr` fence to a PNG: `pikchr --svg-only` for the SVG,
+  then `rsvg-convert` (or `resvg`, or `magick`) for the raster. Neither is
+  linked in; `Tools.find` probes the PATH once. Absent them, the fence is drawn
+  as code — the same thing an unknown language does.
+- `ui/tui.zig` — a turn that is not being edited is drawn through `markup`; the
+  turn being edited is drawn as its source, where the cursor and the selection
+  are exact. Pictures are cached by the fence's text and sent once.
+
+## What is left
+
+- *Sizing is the terminal's*: PNG pixels over the window's cell size, from
+  `TIOCGWINSZ`, or a fixed cell when the terminal reports no pixels.
+- *Highlighting is still separate*: a fence is drawn as its source, in the
+  accent colour; nothing tokenizes Zig or Python. Verso's argument against
+  regexp highlighting does not apply yet — nothing is being highlighted.
+- Djot's generic `:::` container, the one construct that maps onto
+  `Node.element` without loss (`::: tag` to a turn's tag), is unused: turn text
+  arrives as prose, and a turn's `element` carries the raw turns sent to the
+  API.
+- Verso, being Lean-only and HTML-only, stays out of the TUI. It becomes
+  relevant only if run1 ever writes about Lean and emits HTML.
 
 ## Open
 
-- Which languages turn text actually carries, and how often — that sets how
-  much a hand-written highlighter must cover.
-- Whether rendering reads the abstract turn (elements intact, tags usable as
-  structure) or the raw turn (tags as text, to be parsed back out).
-- Whether run1 ever emits HTML. If it does, Verso's cross-reference and
-  Lean-rendering machinery become relevant, and Djot with Pandoc is the lighter
-  road to a static site.
+- Whether the picture appears in the terminal: *not verified here*. The PNG is
+  rendered (`--build-file ./build.research.zig pikchr_probe` reports 424×196),
+  the transmit and placeholder escapes are pinned by tests, but kitty under
+  Xvfb shows no image for `kitten icat` either — the X screenshot does not carry
+  GL output, so the capture is the limit, not the protocol. The check is to run
+  `pikchr_probe` in a real kitty.
+- Which languages turn text carries, and how often — that sets how much a
+  hand-written highlighter must cover.
+- Whether rendering reads the abstract turn (elements intact) or the raw turn
+  (tags re-parsed out).
+- Whether run1 ever emits HTML; if it does, Djot with Pandoc is the lighter road
+  to a static site.
