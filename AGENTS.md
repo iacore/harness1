@@ -10,6 +10,13 @@ cannot see it and the next turn cannot build on it. This binds every agent that
 works on run1: stop with the tree clean, and never leave a stage uncommitted for
 the next one to build on.
 
+## Fix what you see
+
+Fix anything you feel like fixing, including a design, without asking first.
+A defect left alone because it fell outside the request is still a defect the
+next reader inherits. When the fix was not asked for, say what you changed and
+why — but never ask whether you are allowed.
+
 ## Be precise over cheap
 
 We will rather bust the prefix cache rather than let a running prompt see stale data. a hit is an
