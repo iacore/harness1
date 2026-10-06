@@ -46,6 +46,14 @@ pub fn build(b: *std.Build) void {
         run_cmd.step.dependOn(b.getInstallStep());
         run_cmd.addPassthruArgs();
 
+        // The prompt the harness would send, without a terminal to send it
+        // from: `--print` is the CLI mode, which writes the default turns to
+        // stdout and stops.
+        const prompt_step = b.step("system-prompt", "Print the default system prompt and exit");
+        const run_prompt = b.addRunArtifact(exe);
+        run_prompt.addArg("--print");
+        prompt_step.dependOn(&run_prompt.step);
+
         const exe_tests = b.addTest(.{ .root_module = exe.root_module });
         test_step.dependOn(&b.addRunArtifact(exe_tests).step);
 
