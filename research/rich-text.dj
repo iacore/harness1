@@ -1,0 +1,164 @@
+# Rich text
+
+What renders a turn's text richly, and what a markup language would have to do
+it. The premise to check is this: Verso can syntax-highlight turns text. It can,
+under two conditions that decide whether it is usable here at all. Below, what
+Verso is and everything else it does, what Djot is, and where each would attach.
+
+## What there is to render
+
+A turn is a tree, and it is not a string. `core/turns.zig` is the whole of it: a
+`Node` is `text`, or an `element` — a tag, an optional `name` attribute, and
+children — and printing the tree gives the raw turn the API sees. Two
+consequences fix any renderer:
+
+- *A turn's markup is already tags.* Structure arrives as elements, so a
+  rich-text layer consumes a tagged tree; it does not parse prose into one.
+- *Text is a derivation.* `research/turns.dj` holds this: the tree is storage,
+  the raw text is output. A display rendering is a second derivation from the
+  same tree, not a change to the first.
+
+The surface is rows. `ui/row.zig` cuts a turn's text into rows of at most
+`width` cells, styling carried inside them as SGR escapes; `ui/theme.zig` names
+the styles. So a renderer here ends at rows, not HTML or TeX, and its last step
+is always *markup → SGR → row*.
+
+## Verso
+
+Verso is a Lean framework for writing *about Lean*, primarily inspired by
+Scribble and Sphinx (github.com/leanprover/verso). A Verso document is a Lean
+file: the markup is an alternative concrete syntax for Lean, parsed to
+`Lean.Syntax`, elaborated to a data structure, compiled, then run to emit
+output. The official manual is verso.lean-lang.org/doc/latest/.
+
+: markup language
+  A simplified Markdown variant: a well-nested header tree, paragraphs, three
+  list kinds, description lists, quotations, code blocks with a name and
+  arguments, `:::` directives, `{}` commands, `%%%` metadata, and inlines for
+  `_` emphasis, `*` strong, code, links, images, `$`/`$$` math, and `{role}`
+  invocations. Parsing fails fast and locally rather than applying Markdown
+  precedence rules; unmatched delimiters are errors, not literals.
+
+: genres
+  A genre fixes a document's global structure, its cross-cutting state, its
+  additions to the markup, and how it renders. Named in the docs: the manual
+  (books such as TPIL, FPL, MIL), website, and blog genres, plus the Lean
+  language reference. Every genre shares the markup; combining incompatible
+  genre features is a Lean type error.
+
+: extension points
+  Roles, directives, code blocks and commands, each resolved by name to a Lean
+  *expander*. New syntax is a Lean function defined in the document and used in
+  the same document — Verso's markup is extensible in its host language, the
+  Scribble/Sphinx move.
+
+: elaboration and rendering
+  One process from author to reader: parse to `Lean.Syntax`, elaborate, compile,
+  run a traversal pass that resolves cross-references, then render. HTML is a
+  typed DSL (`text`, `tag`, `seq`); math becomes `<code class="math">`.
+
+: cross-reference database
+  In genres that support it, an experimental cross-document mechanism: a site
+  emits `xref.json`, another site adds it as a *remote* in `verso-sources.json`
+  and runs `lake exe verso sync`, then links by semantic name — "the
+  documentation for `Monad`" — rather than by URL.
+
+: Lean code highlighting
+  The one capability the premise names. It highlights *Lean*, and the README's
+  reason is the reason a regexp cannot: "Lean's parser is extensible," so only
+  the parser knows the tokens. Output is HTML with hovers, toggleable proof
+  states and hyperlinks; each token category (constants, keywords, local
+  bindings) and each message severity is a CSS variable. Proof-state display
+  follows Alectryon. The CSS and JS (`highlightingStyle`, `highlightingJs`,
+  Tippy, Popper, `marked`) ship as string constants, and hover data is
+  deduplicated into `-verso-docs.json`.
+
+: SubVerso (github.com/leanprover/subverso)
+  Highlights Lean from any version back to 4.0.0, so a document can contrast
+  Lean versions independent of its own toolchain.
+
+: literate programming and search
+  `lake query :literateHtml` renders a Lean package as a site — search box,
+  module navigation, light and dark themes — configured by `literate.toml`. A
+  development server (`serve`) previews the HTML locally. A full-text-search
+  library builds on Lean with no additional build-time dependencies.
+
+### What the premise needs
+
+Verso can highlight turns text only if both of these hold:
+
+- *The code is Lean.* The highlighter is Lean's own, and the whole project is
+  framed as writing about Lean. A turn's Zig, Python or shell code is not what
+  it knows how to tokenize.
+- *The output is HTML.* The highlighting is HTML plus bundled JS and CSS,
+  styled through CSS variables. Verso has no terminal genre; its outputs are
+  HTML and TeX. Producing rows means writing a new backend over the same token
+  annotations, with Lean still in the loop.
+
+And the price is the Lean toolchain: a document is compiled to an executable, so
+using Verso from Zig means driving a Lean build. run1 is Zig and its display is
+rows, so for a piece of a terminal draw this is a very large dependency.
+
+[INFERENCE] the per-span token categories Verso computes are exactly what a
+terminal highlighter wants; only the *emission* is HTML-shaped. The value is in
+the annotations, not the backend.
+
+## Djot
+
+Djot (djot.net) is John MacFarlane's light markup: it keeps CommonMark's
+features, simplifies the parser, and adds more — definition lists, footnotes,
+tables, insert/delete, highlight, super/subscript, math, smart punctuation,
+attributes on any element, and generic containers.
+
+- *Blocks*: paragraphs, `#` headings, `>` block quotes, bullet/ordered/task and
+  `:` definition lists, ` ``` ` code blocks, `=FORMAT` raw blocks, `:::` divs,
+  pipe tables, `---` thematic breaks.
+- *Inlines*: `_em_`, `*strong*`, `{=mark=}`, `{+insert+}`, `{-delete-}`, `^sup^`,
+  `~sub~`, `[span]{.class}`, `` `code` ``, `` `raw`{=html} ``, links, images,
+  autolinks, footnote references, symbols, and math — a verbatim span prefixed
+  with `$` (inline) or `$$` (display). The dollars delimit; the backticks are
+  verbatim content, so `$` may appear inside.
+- *Attributes*: `{ #id .class key=val %comment }`, attached to a block by the
+  line before it or to an inline by following it.
+- *Divs*: `:::` opens a generic block container, nested divs using longer
+  fences. In the fork here, the word after the fence names the element tag —
+  `::: tag` becomes `<tag>…</tag>` — which is what makes a div the same shape as
+  a turn's `element`.
+- *Parsing*: strictly line-by-line, blocks before inlines, with the spec fixing
+  nesting limits and requiring renderers to sanitize untrusted input.
+
+Implementations exist in JavaScript (the reference, `@djot/djot`), Lua, Rust
+(`jotdown`), Go, PHP and Prolog. Pandoc ≥ 3.1 reads and writes djot (`-f djot`,
+`-t djot`; `-t native` is a parse with no rendering). Djot is not frozen: minor
+syntax changes are expected.
+
+Djot does not highlight code. A ` ```lang ` fence carries a language and the
+renderer decides what to do with it, so Djot supplies the markup — paragraphs,
+emphasis, attributes, generic containers, math — and nothing about tokenizing.
+
+## Where each would attach
+
+Both markups are trees over text, and both have a generic named container —
+`:::` in Djot, `:::` in Verso — which is the one construct that maps onto
+`Node.element` without loss. Neither renders rows by itself.
+
+- Djot, as the markup: already the format of every file under `research/`, with
+  a spec, a reference implementation, test suites, and Pandoc as a parse check.
+  A turn's element tags become div names and its attributes become `{...}`. It
+  renders the model's prose; it does not highlight.
+- Highlighting, as its own step: a tokenizer for the few languages a turn
+  carries, walked by `ui/row.zig` and painted from `ui/theme.zig`. Small,
+  testable, no Lean.
+- Verso, only when the code is Lean and the destination is HTML: exact Lean
+  highlighting with proof states and hovers, at the cost of a Lean toolchain
+  and a web backend. The right tool for a Verso site; the wrong one for the TUI.
+
+## Open
+
+- Which languages turn text actually carries, and how often — that sets how
+  much a hand-written highlighter must cover.
+- Whether rendering reads the abstract turn (elements intact, tags usable as
+  structure) or the raw turn (tags as text, to be parsed back out).
+- Whether run1 ever emits HTML. If it does, Verso's cross-reference and
+  Lean-rendering machinery become relevant, and Djot with Pandoc is the lighter
+  road to a static site.
