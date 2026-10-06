@@ -122,6 +122,16 @@ pub fn size() ?Size {
     return .{ .rows = window.row, .cols = window.col };
 }
 
+/// The window in pixels, so a picture can be sized in the cells it spans; null
+/// when the terminal reports none, which some do.
+pub fn pixels() ?Size {
+    var window: posix.winsize = undefined;
+    const request = @as(u32, @intCast(linux.T.IOCGWINSZ));
+    if (linux.ioctl(stdout, request, @intFromPtr(&window)) != 0) return null;
+    if (window.xpixel == 0 or window.ypixel == 0) return null;
+    return .{ .rows = window.ypixel, .cols = window.xpixel };
+}
+
 // ── Reading ─────────────────────────────────────────────────────────────────
 
 pub const Key = union(enum) {
