@@ -15,6 +15,22 @@ extern fn run1_python_fish(command: [*:0]const u8) [*:0]u8;
 extern fn run1_python_add_turn(text: [*:0]const u8) [*:0]u8;
 extern fn run1_python_prompt(out: [*]u8, capacity: usize) usize;
 extern fn run1_python_free(text: [*:0]u8) void;
+extern fn run1_python_set_host(call: Host.Call, context: ?*anyopaque) void;
+
+/// What a Python `run1` call reaches when it needs the harness itself —
+/// `run1.ask`, `run1.turns`, `run1.system_prompt`. The call answers with a JSON
+/// string it allocated for the shim to free (a `std.heap.c_allocator`
+/// allocation), or null for a method that answered nothing.
+pub const Host = struct {
+    pub const Call = *const fn (?*anyopaque, [*:0]const u8, [*:0]const u8) callconv(.c) ?[*:0]u8;
+};
+
+/// Registers `call` as the host every Python `run1` call goes to. The
+/// interpreter starts lazily, so this may be called before or after the first
+/// line runs; the module reaches the host either way.
+pub fn setHost(call: Host.Call, context: ?*anyopaque) void {
+    run1_python_set_host(call, context);
+}
 
 /// Runs one line in the shell and returns what it printed, as an owned copy.
 pub fn run(allocator: Allocator, code: []const u8) ![]u8 {

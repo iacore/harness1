@@ -49,6 +49,9 @@ pub fn run(init: std.process.Init, options: Options) !void {
     var tui = try Tui.init(init.gpa, init.io, init.environ_map);
     defer tui.deinit();
     tui.begin(options);
+    // Python reaches the harness through this: `run1.ask`, `run1.turns` and
+    // `run1.system_prompt` from the command line or from the python tool.
+    ipython.setHost(hostCall, &tui);
     if (init.environ_map.get("COLUMNS")) |value| tui.cols = std.fmt.parseInt(usize, value, 10) catch 80;
     if (init.environ_map.get("LINES")) |value| tui.rows = std.fmt.parseInt(usize, value, 10) catch 24;
 
@@ -690,23 +693,97 @@ const Tui = struct {
     /// Runs one call the model made. A name outside the declared tools is
     /// answered as such rather than guessed at.
     fn runTool(self: *Tui, arena: std.mem.Allocator, call: model.ToolCall) ![]const u8 {
-        if (!std.mem.eql(u8, call.name, "fish")) return "no such tool";
-        const command = commandOf(self.gpa, call.arguments) orelse return "the call carried no command";
-        defer self.gpa.free(command);
+        const is_fish = std.mem.eql(u8, call.name, "fish");
+        const is_python = std.mem.eql(u8, call.name, "python");
+        if (!is_fish and !is_python) return "no such tool";
 
-        const output = try ipython.fish(self.gpa, command);
+        const key = if (is_fish) "command" else "code";
+        const source = argumentOf(self.gpa, call.arguments, key) orelse
+            return if (is_fish) "the call carried no command" else "the call carried no code";
+        defer self.gpa.free(source);
+
+        const output = if (is_fish)
+            try ipython.fish(self.gpa, source)
+        else
+            try ipython.run(self.gpa, source);
         defer self.gpa.free(output);
 
         // What was run, and what it printed, is a turn of its own.
         var shown: std.ArrayList(u8) = .empty;
         defer shown.deinit(self.gpa);
-        try shown.appendSlice(self.gpa, "fish: ");
-        try shown.appendSlice(self.gpa, command);
+        try shown.appendSlice(self.gpa, call.name);
+        try shown.appendSlice(self.gpa, ": ");
+        try shown.appendSlice(self.gpa, source);
         try shown.appendSlice(self.gpa, "\n");
         try shown.appendSlice(self.gpa, output);
         _ = self.doc.add(.output, shown.items) catch {};
 
         return arena.dupe(u8, output);
+    }
+
+    /// One `run1` call. The answer is a c-allocator string, because that is
+    /// what the shim frees; null is a method the harness does not answer.
+    fn host(self: *Tui, method: []const u8, argument: []const u8) !?[*:0]u8 {
+        const allocator = std.heap.c_allocator;
+        const json = if (std.mem.eql(u8, method, "prompt"))
+            try systemPromptText(allocator)
+        else if (std.mem.eql(u8, method, "ask"))
+            try self.hostAsk(allocator, argument)
+        else if (std.mem.eql(u8, method, "turns"))
+            try self.hostTurns(allocator)
+        else if (std.mem.eql(u8, method, "add")) blk: {
+            _ = self.doc.add(.output, argument) catch {};
+            break :blk try allocator.dupe(u8, "");
+        } else return null;
+        defer allocator.free(json);
+        return (try allocator.dupeSentinel(u8, json, 0)).ptr;
+    }
+
+    /// One exchange with the model — the prompt given, against the harness's
+    /// own prompt and tools — answered as JSON: the reply text and the calls it
+    /// asked for. A call that failed answers with its reason, so Python is told
+    /// why rather than handed a silent nothing.
+    fn hostAsk(self: *Tui, allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
+        var arena_state = std.heap.ArenaAllocator.init(self.gpa);
+        defer arena_state.deinit();
+        const arena = arena_state.allocator();
+
+        var log: Io.Writer.Allocating = .init(self.gpa);
+        defer log.deinit();
+        var reason: std.ArrayList(u8) = .empty;
+        defer reason.deinit(self.gpa);
+
+        const Call = struct { id: []const u8, name: []const u8, arguments: []const u8 };
+        const Reply = struct { text: []const u8, tool_calls: []const Call };
+        const Failed = struct { @"error": []const u8 };
+
+        const reply = model.ask(self.gpa, self.io, self.environ_map, debug.writer(&log.writer), prompt, arena, &reason) catch |err| switch (err) {
+            error.NoKey, error.RequestFailed => return std.json.Stringify.valueAlloc(allocator, Failed{ .@"error" = reason.items }, .{}),
+            else => return err,
+        };
+
+        const calls = try allocator.alloc(Call, reply.calls.len);
+        defer allocator.free(calls);
+        for (reply.calls, calls) |call, *out| {
+            out.* = .{ .id = call.id, .name = call.name, .arguments = call.arguments };
+        }
+        return std.json.Stringify.valueAlloc(allocator, Reply{ .text = reply.text, .tool_calls = calls }, .{});
+    }
+
+    /// The turns on the current path, as JSON: what the document holds, and
+    /// what each turn is.
+    fn hostTurns(self: *Tui, allocator: std.mem.Allocator) ![]u8 {
+        var path: std.ArrayList(editor.Turn) = .empty;
+        defer path.deinit(self.gpa);
+        try self.doc.path(&path);
+
+        const Row = struct { kind: []const u8, text: []const u8 };
+        const rows = try allocator.alloc(Row, path.items.len);
+        defer allocator.free(rows);
+        for (path.items, rows) |turn, *out| {
+            out.* = .{ .kind = @tagName(self.doc.turnKind(turn)), .text = self.doc.turnText(turn) };
+        }
+        return std.json.Stringify.valueAlloc(allocator, rows, .{});
     }
 
     /// A chunk of the reply, drawn the moment it lands. The chain of thought goes
@@ -1327,16 +1404,32 @@ fn freeRows(gpa: std.mem.Allocator, rows: *std.ArrayList([]u8)) void {
     rows.clearAndFree(gpa);
 }
 
-/// The `command` argument of a tool call, read out of the JSON it was given.
-fn commandOf(gpa: std.mem.Allocator, arguments: []const u8) ?[]u8 {
+/// The host a Python `run1` call reaches: a method name and its argument,
+/// answered with JSON the shim frees. `context` is the `*Tui` `setHost` was
+/// given; a method that failed answers nothing.
+fn hostCall(context: ?*anyopaque, method: [*:0]const u8, argument: [*:0]const u8) callconv(.c) ?[*:0]u8 {
+    const self: *Tui = @ptrCast(@alignCast(context.?));
+    return self.host(std.mem.span(method), std.mem.span(argument)) catch null;
+}
+
+/// The harness's system prompt, as an owned string.
+fn systemPromptText(allocator: std.mem.Allocator) ![]u8 {
+    var out: Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try run1.system_prompt.systemPrompt(&out.writer);
+    return allocator.dupe(u8, out.written());
+}
+
+/// One named string argument of a tool call, read out of the JSON it was given.
+fn argumentOf(gpa: std.mem.Allocator, arguments: []const u8, name: []const u8) ?[]u8 {
     const parsed = std.json.parseFromSlice(std.json.Value, gpa, arguments, .{}) catch return null;
     defer parsed.deinit();
     const object = switch (parsed.value) {
         .object => |object| object,
         else => return null,
     };
-    const command = object.get("command") orelse return null;
-    const text = switch (command) {
+    const value = object.get(name) orelse return null;
+    const text = switch (value) {
         .string => |string| string,
         else => return null,
     };

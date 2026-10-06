@@ -70,7 +70,62 @@ static const char *SETUP =
     "    return hist[-offset]\n"
     "def _run1_add(text):\n"
     "    _, out = _capture(add_turn, text)\n"
-    "    return out\n";
+    "    return out\n"
+    // The `run1` module: the same steps, under one importable name, for the
+    // IPython line and for the python tool alike. What needs the harness
+    // itself — its prompt, its turns, a model call — goes through `_run1_host`,
+    // the callback the harness registers.
+    "import json as _json, sys as _sys, types as _types\n"
+    "_run1 = _types.ModuleType('run1')\n"
+    "_run1.__doc__ = \"run1: the harness this interpreter is embedded in.\"\n"
+    "_run1.fish = _run1_fish_call\n"
+    "_run1.system_prompt = lambda: _run1_host('prompt', '') or ''\n"
+    "_run1.add_turn = lambda text: _run1_host('add', str(text)) or ''\n"
+    "_run1.turns = lambda: _json.loads(_run1_host('turns', '') or '[]')\n"
+    "_run1.ask = lambda prompt: _json.loads(_run1_host('ask', str(prompt)) or 'null')\n"
+    "_run1.__all__ = ['fish', 'system_prompt', 'add_turn', 'turns', 'ask']\n"
+    "_sys.modules['run1'] = _run1\n"
+    "shell.user_ns['run1'] = _run1\n";
+
+// The other direction: a Python call that reaches the harness itself. One
+// entry point with a method name and an argument keeps the boundary thin — the
+// host answers with a JSON string it allocated, or nothing, and the shim frees
+// it.
+typedef char *(*run1_host_fn)(void *context, const char *method, const char *argument);
+
+static run1_host_fn host = NULL;
+static void *host_context = NULL;
+
+void run1_python_set_host(run1_host_fn fn, void *context) {
+    host = fn;
+    host_context = context;
+}
+
+static PyObject *host_call(PyObject *self, PyObject *args) {
+    (void)self;
+    const char *method;
+    const char *argument;
+    if (!PyArg_ParseTuple(args, "ss", &method, &argument)) {
+        return NULL;
+    }
+    if (host == NULL) {
+        Py_RETURN_NONE;
+    }
+    char *result = host(host_context, method, argument);
+    if (result == NULL) {
+        Py_RETURN_NONE;
+    }
+    PyObject *out = PyUnicode_FromString(result);
+    free(result);
+    return out;
+}
+
+static PyMethodDef host_method = {
+    "_run1_host",
+    host_call,
+    METH_VARARGS,
+    "Call into run1: a method name and an argument, answered with JSON.",
+};
 
 void run1_python_start(void) {
     if (started) {
@@ -78,6 +133,13 @@ void run1_python_start(void) {
     }
     Py_Initialize();
     namespace = PyModule_GetDict(PyImport_AddModule("__main__"));
+    // The setup builds the `run1` module, which reaches the harness through
+    // this: a C function placed in the namespace the setup runs in.
+    PyObject *host_function = PyCFunction_New(&host_method, NULL);
+    if (host_function != NULL) {
+        PyDict_SetItemString(namespace, "_run1_host", host_function);
+        Py_DECREF(host_function);
+    }
     PyObject *result = PyRun_String(SETUP, Py_file_input, namespace, namespace);
     if (result == NULL) {
         PyErr_Print();

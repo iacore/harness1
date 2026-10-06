@@ -88,17 +88,17 @@ pub const tools = [_][]const u8{
     "memory_recall",                           "memory_remember",
     "pentest_add_finding",                     "pentest_report",
     "pentest_sandbox_run",                     "propose_commit",
-    "read",                                    "recall",
-    "reflect",                                 "report_tool_issue",
-    "resolve",                                 "retain",
-    "search",                                  "session_search",
-    "task",                                    "todo",
-    "tui",                                     "vibe_kill",
-    "vibe_send",                               "vibe_spawn",
-    "vibe_wait",                               "wait",
-    "web_search",                              "worktree",
-    "write",                                   "xd://recall",
-    "yield",
+    "python",                                  "read",
+    "recall",                                  "reflect",
+    "report_tool_issue",                       "resolve",
+    "retain",                                  "search",
+    "session_search",                          "task",
+    "todo",                                    "tui",
+    "vibe_kill",                               "vibe_send",
+    "vibe_spawn",                              "vibe_wait",
+    "wait",                                    "web_search",
+    "worktree",                                "write",
+    "xd://recall",                             "yield",
 };
 
 pub const custom_types = [_][]const u8{
@@ -227,9 +227,11 @@ pub fn operationValues(tool: []const u8, key: []const u8) ?[]const []const u8 {
 pub const Feature = struct { kind: Kind, value: []const u8 };
 
 /// The implemented subset: what the agent loop acts on today. The `fish` tool
-/// is the shell this harness declares to the model and runs.
+/// is the shell this harness declares to the model and runs, and `python` is
+/// the interpreter it embeds.
 pub const implemented = [_]Feature{
     .{ .kind = .tool, .value = "fish" },
+    .{ .kind = .tool, .value = "python" },
 };
 
 pub fn isImplemented(kind: Kind, value: []const u8) bool {

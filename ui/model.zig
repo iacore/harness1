@@ -48,14 +48,32 @@ pub const Tool = struct {
 };
 
 /// The tools this harness declares — what it can actually run, not the whole
-/// vocabulary. `fish` is the shell the harness has.
+/// vocabulary. `fish` is the shell the harness has, and `python` is the
+/// interpreter it embeds.
 pub const declared = [_]Tool{
     .{
         .name = "fish",
         .description = "Run a command line in a fish shell and return what it printed, with its exit status when it failed.",
         .schema = "{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\",\"description\":\"The fish command line to run.\"}},\"required\":[\"command\"],\"additionalProperties\":false}",
     },
+    .{
+        .name = "python",
+        .description = "Run Python code in the interpreter this harness keeps alive and return what it printed. The state — imports, variables — persists between calls.",
+        .schema = "{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"string\",\"description\":\"The Python code to run.\"}},\"required\":[\"code\"],\"additionalProperties\":false}",
+    },
 };
+
+/// Writes the declared tools into `out` in the shape the endpoint takes, so
+/// the streamed round and a one-off `ask` offer the same set.
+fn declare(arena: std.mem.Allocator, out: *std.ArrayList(lithos.chat.Tool)) !void {
+    for (declared) |tool| {
+        try out.append(arena, .{ .function = .{
+            .name = tool.name,
+            .description = tool.description,
+            .parameters = .{ .text = tool.schema },
+        } });
+    }
+}
 
 /// One call the model made, assembled from the fragments it streamed. Owned by
 /// the arena the round was given.
@@ -85,13 +103,7 @@ pub fn round(
     };
 
     var declarations: std.ArrayList(lithos.chat.Tool) = .empty;
-    for (declared) |tool| {
-        try declarations.append(arena, .{ .function = .{
-            .name = tool.name,
-            .description = tool.description,
-            .parameters = .{ .text = tool.schema },
-        } });
-    }
+    try declare(arena, &declarations);
 
     var client = try lithos.Client.init(gpa, io, api_key, .{});
     defer client.deinit();
@@ -159,4 +171,78 @@ pub fn round(
             .arguments = call.arguments.items,
         });
     }
+}
+
+/// One call the model asked for, as the Python `run1.ask` reports it.
+pub const Reply = struct {
+    text: []const u8,
+    calls: []const ToolCall,
+};
+
+/// One exchange with the endpoint, not streamed and running nothing: the
+/// harness's prompt, the prompt given, and the tools declared. What comes back
+/// is the reply text and the calls it asked for, all owned by `arena`. A
+/// failure appends its reason to `reason`.
+pub fn ask(
+    gpa: std.mem.Allocator,
+    io: Io,
+    environ_map: *const std.process.Environ.Map,
+    logger: anytype,
+    prompt: []const u8,
+    arena: std.mem.Allocator,
+    reason: *std.ArrayList(u8),
+) !Reply {
+    const api_key = try keys.apiKey(arena, io, logger, environ_map, keys.Provider.lithosai) orelse {
+        try reason.appendSlice(gpa, "no LithosAI key: set LITHOSAI_API_KEY, or sign in to the `lithosai` provider of omp");
+        return error.NoKey;
+    };
+
+    var declarations: std.ArrayList(lithos.chat.Tool) = .empty;
+    try declare(arena, &declarations);
+
+    var system: Io.Writer.Allocating = .init(arena);
+    defer system.deinit();
+    try run1.system_prompt.systemPrompt(&system.writer);
+
+    const messages = [_]lithos.chat.Message{
+        .{ .system = .{ .content = lithos.chat.text(system.written()) } },
+        .{ .user = .{ .content = lithos.chat.text(prompt) } },
+    };
+
+    var client = try lithos.Client.init(gpa, io, api_key, .{});
+    defer client.deinit();
+
+    var parsed = switch (try lithos.chat.send(&client, &.{
+        .model = default_model,
+        .messages = &messages,
+        .tools = declarations.items,
+        .tool_choice = .auto,
+        .reasoning_effort = .{ .named = default_effort },
+    })) {
+        .ok => |completion| completion,
+        .err => |failure| {
+            var text: Io.Writer.Allocating = .init(gpa);
+            defer text.deinit();
+            try failure.format(&text.writer);
+            try reason.appendSlice(gpa, text.written());
+            return error.RequestFailed;
+        },
+    };
+    defer parsed.deinit();
+
+    const message = parsed.value.message();
+    const source = message.tool_calls orelse &.{};
+    const calls = try arena.alloc(ToolCall, source.len);
+    for (source, calls) |call, *out| {
+        // Everything is copied out of `parsed`, which is freed at return.
+        out.* = .{
+            .id = try arena.dupe(u8, call.id orelse ""),
+            .name = try arena.dupe(u8, call.function.name),
+            .arguments = try arena.dupe(u8, call.function.arguments),
+        };
+    }
+    return .{
+        .text = try arena.dupe(u8, message.content orelse ""),
+        .calls = calls,
+    };
 }
