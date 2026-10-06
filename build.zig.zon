@@ -6,7 +6,12 @@
     // security and trust implications.
     .fingerprint = 0x18e85ba3defaaa68,
     .minimum_zig_version = "0.17.0",
-    .dependencies = .{},
+    // `djot` is the parser the UI renders turn text with. It is a path
+    // dependency, not a fetched one, and only the developer-only program under
+    // `ui` reaches it: a library build never resolves it (see `build.zig`).
+    .dependencies = .{
+        .djot = .{ .path = "../../lib/djot.zig" },
+    },
     // What the package hash covers, and so all that a consumer of it receives:
     // what it takes to compile, plus the licence and the per-model notes under
     // `core/remote/` that a user of the client reads. Developer-only source is

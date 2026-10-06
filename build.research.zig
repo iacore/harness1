@@ -181,6 +181,49 @@ pub fn build(b: *std.Build) void {
     });
     _ = addRunStep(b, kitty_probe_exe, &credentials.step, "kitty_probe", "Clear the kitty scrollback and print text in one transaction");
 
+    // The two halves of a diagram: `ui/pikchr.zig` runs the commands, and
+    // `ui/graphics.zig` transmits the picture and lays out its placeholders.
+    const pikchr_probe_exe = b.addExecutable(.{
+        .name = "pikchr_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/pikchr_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "pikchr", .module = uiFileModule(b, target, optimize, "ui/pikchr.zig") },
+                .{ .name = "graphics", .module = uiFileModule(b, target, optimize, "ui/graphics.zig") },
+            },
+        }),
+    });
+    _ = addRunStep(b, pikchr_probe_exe, &credentials.step, "pikchr_probe", "Render a pikchr diagram and paint it in the terminal");
+
+    // What the Djot renderer makes of a turn's text, printed as it would draw.
+    const djot = b.lazyDependency("djot", .{}) orelse
+        std.debug.panic("the markup probe needs the `djot` package; see build.zig.zon", .{});
+    const djot_mod = b.createModule(.{
+        .root_source_file = djot.path("src/lib.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const markup_mod = b.createModule(.{
+        .root_source_file = b.path("ui/markup.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "djot", .module = djot_mod }},
+    });
+    const markup_probe_exe = b.addExecutable(.{
+        .name = "markup_probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("research/markup_probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "markup", .module = markup_mod },
+            },
+        }),
+    });
+    _ = addRunStep(b, markup_probe_exe, &credentials.step, "markup_probe", "Print how a turn's Djot is drawn");
+
     const model_probe_exe = b.addExecutable(.{
         .name = "model_probe",
         .root_module = b.createModule(.{
@@ -354,6 +397,16 @@ fn harnessModuleOf(b: *std.Build) *std.Build.Module {
 fn kittyModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("ui/kitty.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+}
+
+/// One file under `ui/` as a module, so a research program can reach it without
+/// the whole UI. Its own relative imports come with it.
+fn uiFileModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, root: []const u8) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path(root),
         .target = target,
         .optimize = optimize,
     });

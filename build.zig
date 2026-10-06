@@ -19,6 +19,17 @@ pub fn build(b: *std.Build) void {
     // program, so the exe exists only in a checkout that has it.
     if (b.root.access(b.graph.io, "ui/main.zig", .{})) |_| {
         b.dependOnDirectoryContents(b.path("ui"));
+        // The UI renders turn text with the `djot` package, which lives at the
+        // path `build.zig.zon` names. The lookup is lazy and inside this branch,
+        // so a build without `ui/` — a library consumer's, the paths-only test —
+        // never resolves it.
+        const djot = b.lazyDependency("djot", .{}) orelse
+            std.debug.panic("the UI needs the `djot` package; see build.zig.zon", .{});
+        const djot_mod = b.createModule(.{
+            .root_source_file = djot.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
         // The UI embeds CPython for its scripting layer, so it links libc and
         // libpython and compiles the shim. `python3-config` is asked for the
         // include path and the libraries, so no Python version is written into
@@ -30,6 +41,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
             .imports = &.{
                 .{ .name = "run1", .module = mod },
+                .{ .name = "djot", .module = djot_mod },
             },
         });
         ui.addCSourceFile(.{ .file = b.path("ui/ipython_shim.c"), .flags = &.{"-std=c99"} });
