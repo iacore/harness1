@@ -1095,11 +1095,11 @@ const Tui = struct {
 
         switch (self.mode) {
             .command => {
-                self.lineRow(width, ": ", self.line.items) catch {};
+                self.lineRow(self.rows - 1, width, ": ", self.line.items) catch {};
                 self.frame.place(self.rows - 1, @min(self.line_cursor + 2, width - 1));
             },
             .shell => {
-                self.lineRow(width, self.shell_prompt, self.command.items) catch {};
+                self.lineRow(self.rows - 1, width, self.shell_prompt, self.command.items) catch {};
                 self.frame.place(self.rows - 1, @min(self.command_cursor + self.shell_prompt.len, width - 1));
             },
             // The sheet is scrolled, not edited, so its rows are not a place a
@@ -1157,8 +1157,10 @@ const Tui = struct {
         try self.frame.add(painted);
     }
 
-    /// A line being typed, on the last row: its prefix, then the text.
-    fn lineRow(self: *Tui, width: usize, prefix: []const u8, line: []const u8) !void {
+    /// A line being typed, on row `at`: the rows between it and the transcript
+    /// are filled, so the row is where the cursor is placed.
+    fn lineRow(self: *Tui, at: usize, width: usize, prefix: []const u8, line: []const u8) !void {
+        try self.frame.padTo(at);
         var text: std.ArrayList(u8) = .empty;
         defer text.deinit(self.gpa);
         try text.appendSlice(self.gpa, prefix);

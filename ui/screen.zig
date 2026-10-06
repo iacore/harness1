@@ -41,6 +41,14 @@ pub const Screen = struct {
         try self.rows.append(self.gpa, try self.gpa.dupe(u8, text));
     }
 
+    /// Fills the frame out to `length` rows with blanks, so a row added next
+    /// lands on the row it names instead of the one after the last.
+    pub fn padTo(self: *Screen, length: usize) !void {
+        while (self.rows.items.len < length) {
+            try self.add("");
+        }
+    }
+
     /// Where the cursor is left when the frame is painted, 0-based.
     pub fn place(self: *Screen, row: usize, col: usize) void {
         self.cursor_row = row;
